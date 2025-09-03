@@ -1,0 +1,31 @@
+name: PR Python Diff
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+jobs:
+  python-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # important so git diff works
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Run extractor
+        id: extractor
+        run: python scripts/extract_pr_diffs.py
+
+      - name: Comment on PR
+        if: ${{ github.event.pull_request.number }}
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: ${{ steps.extractor.outputs.diff_markdown }}
