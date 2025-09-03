@@ -3,12 +3,6 @@ import subprocess
 from pathlib import Path
 
 def extract_pr_diffs(base_branch="origin/main"):
-    """
-    Extract Python (.py) code changes from the current PR compared to base_branch.
-    Keeps track of original code context per file.
-    """
-
-    # Run git diff for Python files only
     result = subprocess.run(
         ["git", "diff", f"{base_branch}...HEAD", "--", "*.py"],
         capture_output=True,
@@ -20,8 +14,7 @@ def extract_pr_diffs(base_branch="origin/main"):
 
     if not diff_output:
         return "No Python changes detected."
-
-    # Split by file for clarity
+        
     file_diffs = {}
     current_file = None
     buffer = []
