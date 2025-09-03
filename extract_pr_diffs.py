@@ -10,7 +10,7 @@ def extract_pr_diffs(base_branch="origin/main"):
       - Always exclude this script itself from the diff.
     """
 
-    # Get relative path of this script so we can exclude it
+    # This script’s filename
     script_file = os.path.basename(__file__)
 
     # Count commits ahead of base
@@ -20,28 +20,15 @@ def extract_pr_diffs(base_branch="origin/main"):
     )
 
     if commit_count <= 1:
-        diff_cmd = ["git", "diff", f"{base_branch}...HEAD", "--", "*.py"]
+        diff_cmd = ["git", "diff", f"{base_branch}...HEAD", "--", "*.py", f":(exclude){script_file}"]
     else:
-        diff_cmd = ["git", "diff", "HEAD~1", "HEAD", "--", "*.py"]
+        diff_cmd = ["git", "diff", "HEAD~1", "HEAD", "--", "*.py", f":(exclude){script_file}"]
 
     result = subprocess.run(diff_cmd, capture_output=True, text=True, check=True)
     diff_output = result.stdout.strip()
 
     if not diff_output:
         return "No Python changes detected."
-
-    # 🚨 Filter out diffs of this script itself
-    filtered_lines = []
-    skip = False
-    for line in diff_output.splitlines():
-        if line.startswith("diff --git"):
-            skip = script_file in line  # skip if this diff is about our script
-        if not skip:
-            filtered_lines.append(line)
-
-    diff_output = "\n".join(filtered_lines).strip()
-    if not diff_output:
-        return "No Python changes detected (after excluding script)."
 
     # Split per file
     file_diffs = {}
@@ -62,6 +49,7 @@ def extract_pr_diffs(base_branch="origin/main"):
     if current_file and buffer:
         file_diffs[current_file] = "\n".join(buffer)
 
+    # Format results as Markdown
     markdown_output = "### Python Code Changes\n"
     for fname, diff in file_diffs.items():
         markdown_output += f"\n**File:** `{fname}`\n```diff\n{diff}\n```\n"
