@@ -48,7 +48,7 @@ if __name__ == "__main__":
     # Always print to console
     print(diff_markdown)
 
-    # Only write to GitHub Actions output if inside Actions
+    # ✅ Only runs inside GitHub Actions
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
         with open(github_output, "a") as f:
