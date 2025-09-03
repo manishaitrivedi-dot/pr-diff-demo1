@@ -10,8 +10,8 @@ def extract_pr_diffs(base_branch="origin/main"):
       - Always exclude this script itself from the diff.
     """
 
-    # Get the absolute repo path of this script
-    script_path = os.path.relpath(os.path.abspath(__file__), start=os.getcwd())
+    # Get relative path of this script so we can exclude it
+    script_file = os.path.basename(__file__)
 
     # Count commits ahead of base
     count_cmd = ["git", "rev-list", "--count", f"{base_branch}..HEAD"]
@@ -30,21 +30,20 @@ def extract_pr_diffs(base_branch="origin/main"):
     if not diff_output:
         return "No Python changes detected."
 
-    # 🚨 NEW: filter out our own file from the diff
-    clean_lines = []
-    skip_file = False
+    # 🚨 Filter out diffs of this script itself
+    filtered_lines = []
+    skip = False
     for line in diff_output.splitlines():
         if line.startswith("diff --git"):
-            skip_file = script_path in line  # if this diff is about our script, skip it
-        if not skip_file:
-            clean_lines.append(line)
+            skip = script_file in line  # skip if this diff is about our script
+        if not skip:
+            filtered_lines.append(line)
 
-    diff_output = "\n".join(clean_lines)
-
-    if not diff_output.strip():
+    diff_output = "\n".join(filtered_lines).strip()
+    if not diff_output:
         return "No Python changes detected (after excluding script)."
 
-    # Split by file
+    # Split per file
     file_diffs = {}
     current_file = None
     buffer = []
