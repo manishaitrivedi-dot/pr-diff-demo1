@@ -39,11 +39,11 @@ def extract_pr_diffs(base_branch="origin/main"):
         elif current_file:
             buffer.append(line)
 
-    # Save last file’s changes
+    
     if current_file and buffer:
         file_diffs[current_file] = "\n".join(buffer)
 
-    # Format results as Markdown for PR comment
+    
     markdown_output = "### Python Code Changes in PR\n"
     for fname, diff in file_diffs.items():
         markdown_output += f"\n**File:** `{fname}`\n```diff\n{diff}\n```\n"
