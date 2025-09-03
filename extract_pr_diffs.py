@@ -152,9 +152,9 @@ def main():
             try:
                 with open(github_output, "a", encoding="utf-8") as f:
                     f.write(f"diff_markdown<<EOF\n{diff_markdown}\nEOF\n")
-                print(" Successfully wrote to GITHUB_OUTPUT")
+                print("✅ Successfully wrote to GITHUB_OUTPUT")
             except Exception as e:
-                print(f" Failed to write to GITHUB_OUTPUT: {e}")
+                print(f"❌ Failed to write to GITHUB_OUTPUT: {e}")
         else:
             print("ℹ️  GITHUB_OUTPUT not found (not running in GitHub Actions)")
             
