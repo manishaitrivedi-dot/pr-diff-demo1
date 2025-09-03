@@ -1,8 +1,10 @@
 import os
 import subprocess
-from pathlib import Path
 
 def extract_pr_diffs(base_branch="origin/main"):
+    """
+    Extract Python (.py) code changes from the current PR compared to base_branch.
+    """
     result = subprocess.run(
         ["git", "diff", f"{base_branch}...HEAD", "--", "*.py"],
         capture_output=True,
@@ -21,22 +23,18 @@ def extract_pr_diffs(base_branch="origin/main"):
 
     for line in diff_output.splitlines():
         if line.startswith("diff --git"):
-            # Save previous file’s changes
             if current_file and buffer:
                 file_diffs[current_file] = "\n".join(buffer)
                 buffer = []
-            # Extract filename
             parts = line.split(" b/")
             if len(parts) == 2:
                 current_file = parts[1]
         elif current_file:
             buffer.append(line)
 
-    
     if current_file and buffer:
         file_diffs[current_file] = "\n".join(buffer)
 
-    
     markdown_output = "### Python Code Changes in PR\n"
     for fname, diff in file_diffs.items():
         markdown_output += f"\n**File:** `{fname}`\n```diff\n{diff}\n```\n"
@@ -47,24 +45,11 @@ def extract_pr_diffs(base_branch="origin/main"):
 if __name__ == "__main__":
     diff_markdown = extract_pr_diffs()
 
-    # Always show in console
+    # Always print to console
     print(diff_markdown)
 
-    # Only export if running inside GitHub Actions
+    # Only write to GitHub Actions output if inside Actions
     github_output = os.environ.get("GITHUB_OUTPUT")
-    if github_output:   # <-- prevents KeyError locally
+    if github_output:
         with open(github_output, "a") as f:
             f.write(f"diff_markdown<<EOF\n{diff_markdown}\nEOF\n")
-
-
-
-# if __name__ == "__main__":
-#     diff_markdown = extract_pr_diffs()
-
-#     # logs
-#     print(diff_markdown)
-
-#     github_output = os.environ.get("GITHUB_OUTPUT")
-#     if github_output:
-#         with open(github_output, "a") as f:
-#             f.write(f"diff_markdown<<EOF\n{diff_markdown}\nEOF\n")
