@@ -1,17 +1,17 @@
+import os
 import subprocess
-import sys
 
-def get_diff():
-    # Get the diff for this PR
-    try:
-        result = subprocess.run(
-            ["git", "diff", "origin/main...HEAD"],
-            capture_output=True, text=True, check=True
-        )
-        print(result.stdout)
-    except subprocess.CalledProcessError as e:
-        print("Error running git diff:", e, file=sys.stderr)
-        sys.exit(1)
+# Run git diff for Python files only
+diff = subprocess.run(
+    ["git", "diff", "origin/main...HEAD", "--", "*.py"],
+    capture_output=True, text=True
+).stdout
 
-if __name__ == "__main__":
-    get_diff()
+if not diff.strip():
+    diff = "No Python changes detected."
+
+print(diff)  # Shows up in GitHub Actions logs
+
+# Export diff as GitHub Actions output
+with open(os.environ["GITHUB_OUTPUT"], "a") as gh_out:
+    gh_out.write(f"diff_markdown<<EOF\n{diff}\nEOF\n")
