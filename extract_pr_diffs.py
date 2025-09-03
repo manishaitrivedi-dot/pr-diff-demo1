@@ -1,26 +1,25 @@
 import os
 import subprocess
 
+
 def extract_pr_diffs(base_branch="origin/main"):
     """
-    Extract Python (.py) code changes.
-    - If this is the first commit in the branch, show full diff vs base_branch.
-    - Otherwise, show only the last commit diff.
+    Extract Python (.py) code changes:
+      - If only one commit since base_branch → show full file diff.
+      - If more than one commit → show only the last commit diff.
     """
 
-    # Check how many commits are ahead of base_branch
-    ahead_commits = subprocess.run(
-        ["git", "rev-list", "--count", f"{base_branch}..HEAD"],
-        capture_output=True,
-        text=True,
-        check=True
-    ).stdout.strip()
+    # Count commits ahead of base
+    count_cmd = ["git", "rev-list", "--count", f"{base_branch}..HEAD"]
+    commit_count = int(
+        subprocess.run(count_cmd, capture_output=True, text=True, check=True).stdout.strip()
+    )
 
-    # If only 1 commit ahead → show full diff vs base_branch
-    if ahead_commits == "1":
+    if commit_count <= 1:
+        # First commit: compare against base (full diff)
         diff_cmd = ["git", "diff", f"{base_branch}...HEAD", "--", "*.py"]
     else:
-        # Otherwise → just show the last commit
+        # Subsequent commits: just compare last commit
         diff_cmd = ["git", "diff", "HEAD~1", "HEAD", "--", "*.py"]
 
     result = subprocess.run(diff_cmd, capture_output=True, text=True, check=True)
@@ -29,7 +28,7 @@ def extract_pr_diffs(base_branch="origin/main"):
     if not diff_output:
         return "No Python changes detected."
 
-    # Split diffs per file
+    # Split by file for clarity
     file_diffs = {}
     current_file = None
     buffer = []
@@ -48,7 +47,7 @@ def extract_pr_diffs(base_branch="origin/main"):
     if current_file and buffer:
         file_diffs[current_file] = "\n".join(buffer)
 
-    # Format results for markdown
+    # Format results as Markdown
     markdown_output = "### Python Code Changes\n"
     for fname, diff in file_diffs.items():
         markdown_output += f"\n**File:** `{fname}`\n```diff\n{diff}\n```\n"
@@ -62,7 +61,7 @@ if __name__ == "__main__":
     # Print for logs
     print(diff_markdown)
 
-    # Export for GitHub Actions if running inside CI
+    # Export for GitHub Actions
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
         with open(github_output, "a") as f:
