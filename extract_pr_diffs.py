@@ -6,7 +6,7 @@ diff = subprocess.run(
     ["git", "diff", "origin/main...HEAD", "--", "*.py"],
     capture_output=True, text=True
 ).stdout
-
+# test
 if not diff.strip():
     diff = "No Python changes detected."
 
