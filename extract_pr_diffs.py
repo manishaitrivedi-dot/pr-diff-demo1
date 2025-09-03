@@ -7,24 +7,12 @@ def extract_pr_diffs(base_branch="origin/main"):
     Extract Python (.py) code changes:
       - First commit → full diff against base.
       - Later commits → only last commit.
-      - Always exclude this script itself.
+      - Always exclude this script itself using git pathspec.
     """
-    # Get the absolute path and name of this script
-    script_path = os.path.abspath(__file__)
+    # Get script name for exclusion
     script_name = os.path.basename(__file__)
     
-    # Also get relative path from git root
-    try:
-        git_root = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=True
-        ).stdout.strip()
-        
-        script_rel_path = os.path.relpath(script_path, git_root).replace("\\", "/")
-    except subprocess.CalledProcessError:
-        script_rel_path = script_name
-    
-    print(f"Excluding script: {script_rel_path}")  # Debug info
+    print(f"Script to exclude: {script_name}")  # Debug info
     
     # Count commits since base
     try:
@@ -37,13 +25,19 @@ def extract_pr_diffs(base_branch="origin/main"):
         print(f"Warning: Could not count commits from {base_branch}. Using full diff.")
         commit_count = 1
     
-    # Build diff command
+    # Build diff command with git pathspec exclusion
     if commit_count <= 1:
         # First commit or single commit - diff against base
-        diff_cmd = ["git", "diff", f"{base_branch}...HEAD", "--", "*.py"]
+        diff_cmd = [
+            "git", "diff", f"{base_branch}...HEAD", 
+            "--", "*.py", f":(exclude){script_name}"
+        ]
     else:
         # Multiple commits - only show last commit changes
-        diff_cmd = ["git", "diff", "HEAD~1", "HEAD", "--", "*.py"]
+        diff_cmd = [
+            "git", "diff", "HEAD~1", "HEAD", 
+            "--", "*.py", f":(exclude){script_name}"
+        ]
     
     print(f"Running: {' '.join(diff_cmd)}")  # Debug info
     
@@ -55,17 +49,17 @@ def extract_pr_diffs(base_branch="origin/main"):
         return f"Error running git diff: {e}"
     
     if not diff_output:
-        return "No Python changes detected."
+        return "No Python changes detected (excluding script file)."
     
-    # Split by file and exclude this script
+    # Split by file for better formatting
     file_diffs = {}
     current_file = None
     buffer = []
     
     for line in diff_output.splitlines():
         if line.startswith("diff --git"):
-            # Save previous file's changes if it's not the script
-            if current_file and buffer and not is_script_file(current_file, script_rel_path, script_name):
+            # Save previous file's changes
+            if current_file and buffer:
                 file_diffs[current_file] = "\n".join(buffer)
             buffer = []
             
@@ -85,37 +79,17 @@ def extract_pr_diffs(base_branch="origin/main"):
             buffer.append(line)
     
     # Handle the last file
-    if current_file and buffer and not is_script_file(current_file, script_rel_path, script_name):
+    if current_file and buffer:
         file_diffs[current_file] = "\n".join(buffer)
     
-    # Check if we excluded the script and inform user
-    excluded_files = []
-    for line in diff_output.splitlines():
-        if line.startswith("diff --git"):
-            parts = line.split()
-            if len(parts) >= 4:
-                b_file = parts[3]
-                if b_file.startswith("b/"):
-                    file_name = b_file[2:]
-                else:
-                    file_name = b_file
-                if is_script_file(file_name, script_rel_path, script_name):
-                    excluded_files.append(file_name)
-    
-    if excluded_files:
-        print(f"Excluded files: {excluded_files}")  # Debug info
-    
     if not file_diffs:
-        return "No Python changes detected (after excluding script files)."
+        return "No Python changes detected (after exclusions)."
     
     # Format Markdown
     markdown_output = f"### Python Code Changes\n\n"
     markdown_output += f"**Base Branch:** `{base_branch}`\n"
     markdown_output += f"**Commits Analyzed:** {commit_count}\n"
-    
-    if excluded_files:
-        markdown_output += f"**Excluded:** {', '.join([f'`{f}`' for f in excluded_files])}\n"
-    
+    markdown_output += f"**Excluded:** `{script_name}`\n"
     markdown_output += "\n---\n"
     
     for fname, diff in file_diffs.items():
@@ -123,19 +97,6 @@ def extract_pr_diffs(base_branch="origin/main"):
     
     return markdown_output
 
-def is_script_file(file_path, script_rel_path, script_name):
-    """Check if the file is the script itself"""
-    # Normalize paths
-    file_path = file_path.replace("\\", "/")
-    script_rel_path = script_rel_path.replace("\\", "/")
-    
-    # Check various combinations
-    return (
-        file_path == script_rel_path or
-        file_path == script_name or
-        file_path.endswith("/" + script_name) or
-        script_rel_path.endswith("/" + file_path)
-    )
 
 def main():
     """Main function with error handling"""
@@ -162,6 +123,7 @@ def main():
         print("❌ Error: Not in a git repository or git command failed")
     except Exception as e:
         print(f"❌ Unexpected error: {e}")
+
 
 if __name__ == "__main__":
     main()
