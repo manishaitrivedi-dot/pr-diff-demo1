@@ -17,10 +17,10 @@ def extract_pr_diffs(base_branch="origin/main"):
 
     if commit_count <= 1:
         # First commit: compare against base (full diff)
-        diff_cmd = ["git", "diff", f"{base_branch}...HEAD", "--", "*.py"]
+        diff_cmd = ["git", "diff", f"{base_branch}...HEAD", "--", "*.py", ":(exclude)extract_pr_diffs.py"]
     else:
         # Subsequent commits: just compare last commit
-        diff_cmd = ["git", "diff", "HEAD~1", "HEAD", "--", "*.py"]
+        diff_cmd = ["git", "diff", "HEAD~1", "HEAD", "--", "*.py", ":(exclude)extract_pr_diffs.py"]
 
     result = subprocess.run(diff_cmd, capture_output=True, text=True, check=True)
     diff_output = result.stdout.strip()
