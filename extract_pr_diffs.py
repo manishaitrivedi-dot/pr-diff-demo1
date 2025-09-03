@@ -1,9 +1,8 @@
-import os
 import subprocess
 
 def extract_pr_diffs(base_branch="origin/main"):
     """
-    Extract Python (.py) code changes from the current PR compared to base_branch.
+    Extract Python (.py) code changes from the current branch compared to base_branch.
     """
     result = subprocess.run(
         ["git", "diff", f"{base_branch}...HEAD", "--", "*.py"],
@@ -44,12 +43,4 @@ def extract_pr_diffs(base_branch="origin/main"):
 
 if __name__ == "__main__":
     diff_markdown = extract_pr_diffs()
-
-    # Always print to console
-    print(diff_markdown)
-
-    # ✅ Only runs inside GitHub Actions
-    github_output = os.environ.get("GITHUB_OUTPUT")
-    if github_output:
-        with open(github_output, "a") as f:
-            f.write(f"diff_markdown<<EOF\n{diff_markdown}\nEOF\n")
+    print(diff_markdown)   # ✅ Only print the result, no "diff.patch not found"
