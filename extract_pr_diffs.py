@@ -47,10 +47,24 @@ def extract_pr_diffs(base_branch="origin/main"):
 if __name__ == "__main__":
     diff_markdown = extract_pr_diffs()
 
-    # logs
+    # Always show in console
     print(diff_markdown)
 
+    # Only export if running inside GitHub Actions
     github_output = os.environ.get("GITHUB_OUTPUT")
-    if github_output:
+    if github_output:   # <-- prevents KeyError locally
         with open(github_output, "a") as f:
             f.write(f"diff_markdown<<EOF\n{diff_markdown}\nEOF\n")
+
+
+
+# if __name__ == "__main__":
+#     diff_markdown = extract_pr_diffs()
+
+#     # logs
+#     print(diff_markdown)
+
+#     github_output = os.environ.get("GITHUB_OUTPUT")
+#     if github_output:
+#         with open(github_output, "a") as f:
+#             f.write(f"diff_markdown<<EOF\n{diff_markdown}\nEOF\n")
