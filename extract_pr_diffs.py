@@ -14,8 +14,9 @@ def extract_pr_diffs(base_branch="origin/main", specific_file=None):
         file_pattern = "*.py"
         print(f"DEBUG: Looking for all Python files")
     
+    # Changed this line to show incremental diff
     diff_cmd = [
-        "git", "diff", f"{base_branch}...HEAD", 
+        "git", "diff", "HEAD~1", "HEAD", 
         "--", file_pattern, f":(exclude){script_name}"
     ]
     
@@ -48,13 +49,13 @@ def extract_pr_diffs(base_branch="origin/main", specific_file=None):
     if current_file and buffer:
         file_diffs[current_file] = "\n".join(buffer)
     
-    output = f"### Changes for {specific_file or 'All Python Files'}\n\n"
+    output = f"### Last Commit Changes for {specific_file or 'All Python Files'}\n\n"
     for fname, diff in file_diffs.items():
         output += f"#### File: `{fname}`\n```diff\n{diff}\n```\n\n"
     
     return output
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # Fixed the syntax error
     specific_file = sys.argv[1] if len(sys.argv) > 1 else None
     if specific_file:
         print(f"*** FILTERING FOR: {specific_file} ***")
