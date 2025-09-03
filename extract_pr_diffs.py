@@ -1,20 +1,27 @@
 import os
 import subprocess
-import argparse
 
-
-def extract_pr_diffs(base_branch="origin/main", last_commit_only=False):
+def extract_pr_diffs(base_branch="origin/main"):
     """
     Extract Python (.py) code changes.
-
-    Modes:
-      - Default (PR mode): Compare base_branch...HEAD (cumulative PR diff).
-      - Last commit mode: Compare HEAD~1 vs HEAD (only latest commit).
+    - If this is the first commit in the branch, show full diff vs base_branch.
+    - Otherwise, show only the last commit diff.
     """
-    if last_commit_only:
-        diff_cmd = ["git", "diff", "HEAD~1", "HEAD", "--", "*.py"]
-    else:
+
+    # Check how many commits are ahead of base_branch
+    ahead_commits = subprocess.run(
+        ["git", "rev-list", "--count", f"{base_branch}..HEAD"],
+        capture_output=True,
+        text=True,
+        check=True
+    ).stdout.strip()
+
+    # If only 1 commit ahead → show full diff vs base_branch
+    if ahead_commits == "1":
         diff_cmd = ["git", "diff", f"{base_branch}...HEAD", "--", "*.py"]
+    else:
+        # Otherwise → just show the last commit
+        diff_cmd = ["git", "diff", "HEAD~1", "HEAD", "--", "*.py"]
 
     result = subprocess.run(diff_cmd, capture_output=True, text=True, check=True)
     diff_output = result.stdout.strip()
@@ -41,7 +48,7 @@ def extract_pr_diffs(base_branch="origin/main", last_commit_only=False):
     if current_file and buffer:
         file_diffs[current_file] = "\n".join(buffer)
 
-    # Format for Markdown (PR comment style)
+    # Format results for markdown
     markdown_output = "### Python Code Changes\n"
     for fname, diff in file_diffs.items():
         markdown_output += f"\n**File:** `{fname}`\n```diff\n{diff}\n```\n"
@@ -50,14 +57,12 @@ def extract_pr_diffs(base_branch="origin/main", last_commit_only=False):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Extract Python diffs from PRs or commits.")
-    parser.add_argument("--last-commit", action="store_true", help="Show only last commit diff instead of full PR diff.")
-    args = parser.parse_args()
+    diff_markdown = extract_pr_diffs()
 
-    diff_markdown = extract_pr_diffs(last_commit_only=args.last_commit)
-
+    # Print for logs
     print(diff_markdown)
 
+    # Export for GitHub Actions if running inside CI
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
         with open(github_output, "a") as f:
