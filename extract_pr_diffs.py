@@ -5,33 +5,41 @@ import subprocess
 def extract_pr_diffs(base_branch="origin/main"):
     """
     Extract Python (.py) code changes:
-      - If only one commit since base_branch → show full file diff.
-      - If more than one commit → show only the last commit diff.
-      - Always exclude this script itself from the diff.
+      - First commit → full diff against base.
+      - Later commits → only last commit.
+      - Always exclude this script itself.
     """
 
-    script_file = os.path.basename(__file__)  # get the filename of this script
+    # Identify this script (both relative + basename)
+    script_path = os.path.relpath(__file__).replace("\\", "/")
+    script_name = os.path.basename(__file__)
 
-    # Count commits ahead of base
+    # Count commits since base
     count_cmd = ["git", "rev-list", "--count", f"{base_branch}..HEAD"]
     commit_count = int(
         subprocess.run(count_cmd, capture_output=True, text=True, check=True).stdout.strip()
     )
 
+    # Build diff command
     if commit_count <= 1:
-        # First commit → full diff since base
-        diff_cmd = ["git", "diff", f"{base_branch}...HEAD", "--", "*.py", f":(exclude)extract_pr_diffs.py", f":(exclude)scripts/extract_pr_diffs.py"]
+        diff_cmd = [
+            "git", "diff", f"{base_branch}...HEAD", "--", "*.py",
+            f":(exclude){script_path}", f":(exclude){script_name}"
+        ]
     else:
-        # Subsequent commits → last commit only
-        diff_cmd = ["git", "diff", "HEAD~1", "HEAD", "--", "*.py", f":(exclude)extract_pr_diffs.py", f":(exclude)scripts/extract_pr_diffs.py"]
+        diff_cmd = [
+            "git", "diff", "HEAD~1", "HEAD", "--", "*.py",
+            f":(exclude){script_path}", f":(exclude){script_name}"
+        ]
 
+    # Run diff
     result = subprocess.run(diff_cmd, capture_output=True, text=True, check=True)
     diff_output = result.stdout.strip()
 
     if not diff_output:
         return "No Python changes detected."
 
-    # Parse file diffs
+    # Split by file
     file_diffs = {}
     current_file = None
     buffer = []
@@ -50,7 +58,7 @@ def extract_pr_diffs(base_branch="origin/main"):
     if current_file and buffer:
         file_diffs[current_file] = "\n".join(buffer)
 
-    # Format for Markdown
+    # Format Markdown
     markdown_output = "### Python Code Changes\n"
     for fname, diff in file_diffs.items():
         markdown_output += f"\n**File:** `{fname}`\n```diff\n{diff}\n```\n"
@@ -60,8 +68,10 @@ def extract_pr_diffs(base_branch="origin/main"):
 
 if __name__ == "__main__":
     diff_markdown = extract_pr_diffs()
-    print(diff_markdown)
 
+    print(diff_markdown)  # Log output
+
+    # GitHub Actions output
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
         with open(github_output, "a") as f:
