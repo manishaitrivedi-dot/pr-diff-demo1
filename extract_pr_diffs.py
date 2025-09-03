@@ -47,10 +47,9 @@ def extract_pr_diffs(base_branch="origin/main"):
 if __name__ == "__main__":
     diff_markdown = extract_pr_diffs()
 
-    # Print for logs
+    # logs
     print(diff_markdown)
 
-    # Export for GitHub Actions
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
         with open(github_output, "a") as f:
