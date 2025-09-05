@@ -1,10 +1,5 @@
-name: PR Inline Comment
-
-on:
-  pull_request:
-
 jobs:
-  comment:
+  python-diff:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
@@ -13,11 +8,12 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.10"
+          python-version: "3.x"
 
       - name: Install requests
         run: pip install requests
 
+      # 👉 Replace this part with the new step
       - name: Run inline comment script
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
