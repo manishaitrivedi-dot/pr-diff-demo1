@@ -1,57 +1,65 @@
 import os
 import requests
 
-REPO = "manishaitrivedi-dot/pr-diff-demo1"
-PR_NUMBER = 3
-GITHUB_TOKEN = os.environ["GH_TOKEN"]
+def post_inline_comments(repo, pr_number, comments_list):
+    """
+    Post inline comments to a GitHub Pull Request.
 
-headers = {
-    "Authorization": f"token {GITHUB_TOKEN}",
-    "Accept": "application/vnd.github.v3+json"
-}
+    Args:
+        repo (str): "owner/repo-name"
+        pr_number (int): Pull Request number
+        comments_list (list): List of dicts with keys: file, position, message
+                              (position = line number inside the PR diff, not file line)
+    """
 
-# Get latest commit SHA
-commits_url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/commits"
-commits_resp = requests.get(commits_url, headers=headers)
-latest_commit_sha = commits_resp.json()[-1]["sha"]
+    # Read token from environment variable
+    GITHUB_TOKEN = os.environ["GH_TOKEN"]
 
-url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/comments"
-
-# Try commenting on simple_test.py with different approaches
-test_comments = [
-    # Try without specifying side (GitHub will default it)
-    {
-        "body": "Test comment 1 - no side specified",
-        "commit_id": latest_commit_sha,
-        "path": "simple_test.py",
-        "line": 1
-    },
-    # Try with position instead of line (for new files)
-    {
-        "body": "Test comment 2 - using position",
-        "commit_id": latest_commit_sha,
-        "path": "simple_test.py",
-        "position": 1
-    },
-    # Try line 2
-    {
-        "body": "Test comment 3 - line 2",
-        "commit_id": latest_commit_sha,
-        "path": "simple_test.py",
-        "line": 2,
-        "side": "RIGHT"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
     }
-]
 
-for i, comment_data in enumerate(test_comments, 1):
-    print(f"Trying approach {i}...")
-    resp = requests.post(url, headers=headers, json=comment_data)
-    
-    if resp.status_code == 201:
-        print(f"SUCCESS: {comment_data['body']}")
-        break  # Stop after first success
-    else:
-        print(f"Failed: {resp.status_code}")
-        print(f"Response: {resp.text}")
+    # Step 1: Get the latest commit SHA of the PR
+    commits_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/commits"
+    commits_resp = requests.get(commits_url, headers=headers)
+    commits_resp.raise_for_status()
+    latest_commit_sha = commits_resp.json()[-1]["sha"]
 
-print("Test completed")
+    # Step 2: Prepare API endpoint for posting comments
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
+
+    success_count = 0
+    for comment in comments_list:
+        comment_data = {
+            "body": comment["message"],
+            "commit_id": latest_commit_sha,
+            "path": comment["file"],
+            "position": comment["position"],  # Use diff position for new/changed files
+            "side": "RIGHT"
+        }
+
+        resp = requests.post(url, headers=headers, json=comment_data)
+        if resp.status_code == 201:
+            print(f"✅ Posted: {comment['message']}")
+            success_count += 1
+        else:
+            print(f"❌ Failed: {comment['message']} — {resp.text}")
+
+    return success_count
+
+
+if __name__ == "__main__":
+    # Example usage (dummy comments)
+    my_comments = [
+        {"file": "simple_test.py", "position": 3, "message": "💡 Consider adding a docstring"},
+        {"file": "simple_test.py", "position": 6, "message": "⚡ greet() could be improved"}
+    ]
+
+    posted_count = post_inline_comments(
+        repo="manishaitrivedi-dot/pr-diff-demo1",
+        pr_number=3,
+        comments_list=my_comments
+    )
+
+    print(f"Successfully posted {posted_count} comments")
