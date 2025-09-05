@@ -6,6 +6,6 @@ def greet():
     print("Hello")
     print("dummy change for inline comment test")
 
- 
+
 x = 5
 print("This is a test")
