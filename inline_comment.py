@@ -1,32 +1,34 @@
 import os
 import requests
 
-# --- Config ---
-GITHUB_TOKEN = os.environ.get("GH_TOKEN")  # GitHub Actions injects this
+# Repo info
 REPO = "manishaitrivedi-dot/pr-diff-demo1"
-PR_NUMBER = 3   # your open PR
+PR_NUMBER = 3   # <-- update if testing on a different PR
+
+# GitHub token from GitHub Actions secret
+GITHUB_TOKEN = os.environ["GH_TOKEN"]
 
 headers = {
     "Authorization": f"token {GITHUB_TOKEN}",
     "Accept": "application/vnd.github.v3+json"
 }
 
-# 1. Get latest commit SHA of the PR
+# 1️⃣ Get the latest commit SHA for this PR
 commits_url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/commits"
 commits_resp = requests.get(commits_url, headers=headers)
 commits_resp.raise_for_status()
 latest_commit_sha = commits_resp.json()[-1]["sha"]
 
-# 2. Post inline comment on line 4 of simple_test.py
+# 2️⃣ Post an inline comment
 url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/comments"
 data = {
-    "body": "⚡ Automated inline comment from Python script!",
+    "body": "⚡ Inline comment added automatically by Python script",
     "commit_id": latest_commit_sha,
-    "path": "simple_test.py",
-    "line": 4,  # change this to whichever line you want (1–9)
+    "path": "simple_test.py",   # file in your PR
+    "line": 4,                  # line number inside that file
     "side": "RIGHT"
 }
 
 resp = requests.post(url, headers=headers, json=data)
 print("Status:", resp.status_code)
-print(resp.json())
+print("Response:", resp.json())
