@@ -33,9 +33,9 @@ def post_inline_comments(repo, pr_number, comments_list):
 if __name__ == "__main__":
     # example usage
     my_comments = [
-        {"file": "extract_pr_diffs.py", "line": 6, "message": "inline comment add 1"},
-        {"file": "extract_pr_diffs.py", "line": 7, "message": "inline comment add 2"},
-        {"file": "extract_pr_diffs.py", "line": 8, "message": "inline comment add 3"}
+        {"file": "extract_pr_diffs.py", "line": 7, "message": "inline comment add 1"},
+        {"file": "extract_pr_diffs.py", "line": 8, "message": "inline comment add 2"},
+        {"file": "extract_pr_diffs.py", "line": 9, "message": "inline comment add 3"}
     ]
     posted_count = post_inline_comments(
         repo="manishaitrivedi-dot/pr-diff-demo1",
