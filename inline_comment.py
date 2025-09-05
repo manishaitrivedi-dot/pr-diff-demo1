@@ -1,31 +1,29 @@
 import os
 import requests
 
-# Repo info
+# Config
+GITHUB_TOKEN = os.environ["GH_TOKEN"]   # Secret set in GitHub Actions
 REPO = "manishaitrivedi-dot/pr-diff-demo1"
-PR_NUMBER = 3   # <-- update if testing on a different PR
-
-# GitHub token from GitHub Actions secret
-GITHUB_TOKEN = os.environ["GH_TOKEN"]
+PR_NUMBER = 3   # Your open PR
 
 headers = {
     "Authorization": f"token {GITHUB_TOKEN}",
     "Accept": "application/vnd.github.v3+json"
 }
 
-# 1️⃣ Get the latest commit SHA for this PR
+# 1. Get latest commit SHA for this PR
 commits_url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/commits"
 commits_resp = requests.get(commits_url, headers=headers)
 commits_resp.raise_for_status()
-latest_commit_sha = commits_resp.json()[-1]["sha"]
+commit_sha = commits_resp.json()[-1]["sha"]
 
-# 2️⃣ Post an inline comment
+# 2. Post inline comment
 url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/comments"
 data = {
-    "body": "⚡ Inline comment added automatically by Python script",
-    "commit_id": latest_commit_sha,
-    "path": "simple_test.py",   # file in your PR
-    "line": 4,                  # line number inside that file
+    "body": "⚡ Inline comment from Python script!",
+    "commit_id": commit_sha,
+    "path": "simple_test.py",  # must match exactly
+    "line": 4,                 # line inside the green diff
     "side": "RIGHT"
 }
 
