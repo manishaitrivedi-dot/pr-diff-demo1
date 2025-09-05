@@ -2,7 +2,7 @@ name: Inline Comment Bot
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [synchronize, opened, reopened]
 
 jobs:
   comment:
@@ -15,7 +15,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.x'
 
       - name: Install requests
         run: pip install requests
