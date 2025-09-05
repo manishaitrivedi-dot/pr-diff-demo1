@@ -20,35 +20,17 @@ def post_inline_comments(repo, pr_number, comments_list):
     commits_resp.raise_for_status()
     latest_commit_sha = commits_resp.json()[-1]["sha"]
 
-    # Step 2: Get PR files (with patches)
-    files = get_pr_files(repo, pr_number, headers)
-
-    print("\n📋 Files in PR and their valid diff patches:\n")
-    for f in files:
-        print(f"▶ {f['filename']}")
-        print(f"Patch:\n{f['patch']}\n{'-'*50}")
-
-    # Step 3: Post comments
+    # Step 2: Post comments
     url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
     success_count = 0
 
     for comment in comments_list:
-        file_name = comment["file"]
-
-        # Find file in PR
-        f = next((x for x in files if x["filename"] == file_name), None)
-        if not f:
-            print(f"⚠️ Skipping {file_name} — not in PR diff")
-            continue
-
-        # For new files, use "position", not "line"
-        position = comment.get("position", 1)
-
         comment_data = {
             "body": comment["message"],
             "commit_id": latest_commit_sha,
-            "path": file_name,
-            "position": position
+            "path": comment["file"],
+            "position": comment["position"],   # use patch position, not line
+            "side": "RIGHT"
         }
 
         resp = requests.post(url, headers=headers, json=comment_data)
@@ -65,9 +47,11 @@ if __name__ == "__main__":
     repo = "manishaitrivedi-dot/pr-diff-demo1"
     pr_number = 3
 
+    # Use positions from the patch above
     my_comments = [
-        {"file": "simple_test.py", "message": "💡 Consider adding docstring", "position": 1},
-        {"file": "simple_test.py", "message": "⚡ greet() could be improved", "position": 2},
+        {"file": "simple_test.py", "message": "💡 Add docstring to function", "position": 1},
+        {"file": "simple_test.py", "message": "⚡ Consider improving greet()", "position": 4},
+        {"file": "simple_test.py", "message": "🔍 Avoid hardcoded string", "position": 11},
     ]
 
     posted_count = post_inline_comments(repo, pr_number, my_comments)
