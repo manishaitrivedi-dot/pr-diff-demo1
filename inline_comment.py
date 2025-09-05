@@ -1,42 +1,53 @@
 import os
 import requests
 
+def get_pr_files(repo, pr_number, headers):
+    """Fetch files and valid positions in the PR."""
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files"
+    resp = requests.get(url, headers=headers)
+    resp.raise_for_status()
+    return resp.json()
+
 def post_inline_comments(repo, pr_number, comments_list):
     """
     Post inline comments to a GitHub Pull Request.
-
-    Args:
-        repo (str): "owner/repo-name"
-        pr_number (int): Pull Request number
-        comments_list (list): List of dicts with keys: file, position, message
-                              (position = line number inside the PR diff, not file line)
+    comments_list = list of dicts {file, message, position}
     """
 
-    # Read token from environment variable
     GITHUB_TOKEN = os.environ["GH_TOKEN"]
-
     headers = {
         "Authorization": f"token {GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
     }
 
-    # Step 1: Get the latest commit SHA of the PR
+    # Step 1: Get latest commit SHA
     commits_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/commits"
     commits_resp = requests.get(commits_url, headers=headers)
     commits_resp.raise_for_status()
     latest_commit_sha = commits_resp.json()[-1]["sha"]
 
-    # Step 2: Prepare API endpoint for posting comments
-    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
+    # Step 2: Get PR files and their valid positions
+    files = get_pr_files(repo, pr_number, headers)
+    file_positions = {f["filename"]: f for f in files}
 
+    # Step 3: Post comments only for valid files/positions
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
     success_count = 0
+
     for comment in comments_list:
+        file_name = comment["file"]
+        if file_name not in file_positions:
+            print(f"⚠️ Skipping {file_name} — not in this PR diff")
+            continue
+
+        # Use a safe position inside the diff (example: 1st line of the patch)
+        position = comment.get("position", 1)
+
         comment_data = {
             "body": comment["message"],
             "commit_id": latest_commit_sha,
-            "path": comment["file"],
-            "position": comment["position"],  # Use diff position for new/changed files
-            "side": "RIGHT"
+            "path": file_name,
+            "position": position
         }
 
         resp = requests.post(url, headers=headers, json=comment_data)
@@ -50,16 +61,14 @@ def post_inline_comments(repo, pr_number, comments_list):
 
 
 if __name__ == "__main__":
-    # Example usage (dummy comments)
+    repo = "manishaitrivedi-dot/pr-diff-demo1"
+    pr_number = 3
+
+    # Dummy test comments
     my_comments = [
-        {"file": "simple_test.py", "position": 3, "message": "💡 Consider adding a docstring"},
-        {"file": "simple_test.py", "position": 6, "message": "⚡ greet() could be improved"}
+        {"file": "simple_test.py", "message": "💡 Consider adding docstring", "position": 1},
+        {"file": "simple_test.py", "message": "⚡ greet() could be improved", "position": 3},
     ]
 
-    posted_count = post_inline_comments(
-        repo="manishaitrivedi-dot/pr-diff-demo1",
-        pr_number=3,
-        comments_list=my_comments
-    )
-
-    print(f"Successfully posted {posted_count} comments")
+    posted_count = post_inline_comments(repo, pr_number, my_comments)
+    print(f"✅ Successfully posted {posted_count} comments")
