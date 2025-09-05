@@ -14,7 +14,7 @@ url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/comments"
 data = {
     "body": "This is an inline comment from Python script ✅",
     "commit_id": "YOUR_COMMIT_SHA",
-    "path": "demo.py",
+    "path": "simple_test.py",
     "line": 1,
     "side": "RIGHT"
 }
