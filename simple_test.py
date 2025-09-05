@@ -11,3 +11,4 @@ print("This is a test")
 # Modified via git command 
 def new_function(): 
     return "modified locally" 
+"# dummy comment" 
