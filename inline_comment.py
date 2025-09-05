@@ -10,34 +10,52 @@ headers = {
     "Accept": "application/vnd.github.v3+json"
 }
 
-# Check what files are actually changed in this PR
-files_url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/files"
-files_resp = requests.get(files_url, headers=headers)
-print("PR #3 changed files:")
-for file in files_resp.json():
-    print(f"  - {file['filename']} (status: {file['status']})")
+# Get latest commit SHA
+commits_url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/commits"
+commits_resp = requests.get(commits_url, headers=headers)
+commits_resp.raise_for_status()
+latest_commit_sha = commits_resp.json()[-1]["sha"]
 
-# Now use one of the files that actually changed
-changed_files = files_resp.json()
-if changed_files:
-    target_file = changed_files[0]['filename']  # Use the first changed file
-    print(f"Will comment on: {target_file}")
-    
-    # Get commit SHA
-    commits_url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/commits"
-    commits_resp = requests.get(commits_url, headers=headers)
-    latest_commit_sha = commits_resp.json()[-1]["sha"]
-    
-    # Post comment
-    url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/comments"
-    data = {
-        "body": "⚡ Inline comment added by bot",
+print(f"Using commit SHA: {latest_commit_sha}")
+
+# Post inline comments on simple_test.py
+url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/comments"
+
+comments = [
+    {
+        "body": "Consider adding a docstring to document what this function does.",
         "commit_id": latest_commit_sha,
-        "path": target_file,
+        "path": "simple_test.py",
         "line": 1,
         "side": "RIGHT"
+    },
+    {
+        "body": "Good function implementation! Consider adding type hints for better code documentation.",
+        "commit_id": latest_commit_sha,
+        "path": "simple_test.py",
+        "line": 3,
+        "side": "RIGHT"
+    },
+    {
+        "body": "Consider using constants or configuration for hardcoded strings.",
+        "commit_id": latest_commit_sha,
+        "path": "simple_test.py",
+        "line": 4,
+        "side": "RIGHT"
     }
+]
+
+success_count = 0
+for i, comment_data in enumerate(comments, 1):
+    print(f"Posting comment {i}/{len(comments)} on line {comment_data['line']}")
     
-    resp = requests.post(url, headers=headers, json=data)
-    print("Status:", resp.status_code)
-    print("Response:", resp.text)
+    resp = requests.post(url, headers=headers, json=comment_data)
+    
+    if resp.status_code == 201:
+        print(f"  Success!")
+        success_count += 1
+    else:
+        print(f"  Failed: {resp.status_code}")
+        print(f"  Response: {resp.text}")
+
+print(f"\nPosted {success_count}/{len(comments)} comments successfully!")
