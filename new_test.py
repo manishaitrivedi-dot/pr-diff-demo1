@@ -1,6 +1,0 @@
-print('Welcome to our app') 
-print('Version 1.0') 
-print('Added in second commit') 
-print('More functionality') 
-print('Latest addition - testing incremental diff') 
-print('Testing unified=0 flag') 
