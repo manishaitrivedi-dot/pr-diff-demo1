@@ -1,65 +1,45 @@
 import os
 import requests
-import re
-
-def get_pr_files(repo, pr_number, headers):
-    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files"
-    resp = requests.get(url, headers=headers)
-    resp.raise_for_status()
-    return resp.json()
-
-def post_inline_comment(repo, pr_number, file_name, message):
+def post_inline_comments(repo, pr_number, comments_list):
+    # Read token from environment variable
     GITHUB_TOKEN = os.environ["GH_TOKEN"]
     headers = {
         "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json"
+        "Accept": "application/vnd.github.v3+json"
     }
-
-    # 1. Get latest commit SHA
+    # get the latest commit SHA of the PR
     commits_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/commits"
     commits_resp = requests.get(commits_url, headers=headers)
-    commits_resp.raise_for_status()
+    commits_resp.raise_for_status()  # ensures error is raised if request fails
     latest_commit_sha = commits_resp.json()[-1]["sha"]
-
-    # 2. Get PR files
-    files = get_pr_files(repo, pr_number, headers)
-    target_file = next((f for f in files if f["filename"] == file_name), None)
-
-    if not target_file:
-        print(f"⚠️ File {file_name} not found in PR")
-        return
-
+    # prepare API endpoint for posting comments
     url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
-
-    # 3. Build payload
-    payload = {
-        "body": message,
-        "commit_id": latest_commit_sha,
-        "path": file_name,
-    }
-
-    if target_file["status"] == "added":  
-        # New file → must use "position"
-        payload["position"] = 1
-    else:  
-        # Modified file → must use "line"
-        payload["line"] = 1
-        payload["side"] = "RIGHT"
-
-    # 4. Send request
-    resp = requests.post(url, headers=headers, json=payload)
-    print("Status:", resp.status_code)
-    print("Response:", resp.json())
-
-
+    success_count = 0
+    for comment in comments_list:
+        comment_data = {
+            "body": comment["message"],
+            "commit_id": latest_commit_sha,
+            "path": comment["file"],
+            "line": comment["line"],
+            "side": "RIGHT"  # inline comment on the changed line
+        }
+        resp = requests.post(url, headers=headers, json=comment_data)
+        if resp.status_code == 201:
+            print(f"Posted: {comment['message']}")
+            success_count += 1
+        else:
+            print(f"Failed: {comment['message']} — {resp.text}")
+    return success_count
 if __name__ == "__main__":
-    repo = "manishaitrivedi-dot/pr-diff-demo1"
-    pr_number = 3
-
-    # Try commenting on simple_test.py
-    post_inline_comment(
-        repo,
-        pr_number,
-        file_name="simple_test.py",
-        message="💡 This is a test inline comment on a new file"
+    # example usage
+    my_comments = [
+        {"file": "extract_pr_diffs.py", "line": 7, "message": "inline comment add 1"},
+        {"file": "extract_pr_diffs.py", "line": 8, "message": "inline comment add 2"},
+        {"file": "extract_pr_diffs.py", "line": 9, "message": "inline comment add 3"}
+    ]
+    posted_count = post_inline_comments(
+        repo="manishaitrivedi-dot/pr-diff-demo1",
+        pr_number=3,
+        comments_list=my_comments
     )
+    print(f"Successfully posted {posted_count} comments")
