@@ -10,20 +10,48 @@ headers = {
     "Accept": "application/vnd.github.v3+json"
 }
 
-# Debug: Check what files GitHub API actually sees
-files_url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/files"
-files_resp = requests.get(files_url, headers=headers)
+# Get latest commit SHA
+commits_url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/commits"
+commits_resp = requests.get(commits_url, headers=headers)
+latest_commit_sha = commits_resp.json()[-1]["sha"]
 
-print("=== FILES IN PR (GitHub API view) ===")
-if files_resp.status_code == 200:
-    for file in files_resp.json():
-        print(f"File: {file['filename']}")
-        print(f"Status: {file['status']}")
-        print(f"Changes: +{file['additions']} -{file['deletions']}")
-        print("---")
-else:
-    print(f"Failed to get files: {files_resp.status_code}")
+url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/comments"
 
-# Check if simple_test.py is in the list
-simple_test_found = any(f['filename'] == 'simple_test.py' for f in files_resp.json())
-print(f"simple_test.py found in PR: {simple_test_found}")
+# Try commenting on simple_test.py with different approaches
+test_comments = [
+    # Try without specifying side (GitHub will default it)
+    {
+        "body": "Test comment 1 - no side specified",
+        "commit_id": latest_commit_sha,
+        "path": "simple_test.py",
+        "line": 1
+    },
+    # Try with position instead of line (for new files)
+    {
+        "body": "Test comment 2 - using position",
+        "commit_id": latest_commit_sha,
+        "path": "simple_test.py",
+        "position": 1
+    },
+    # Try line 2
+    {
+        "body": "Test comment 3 - line 2",
+        "commit_id": latest_commit_sha,
+        "path": "simple_test.py",
+        "line": 2,
+        "side": "RIGHT"
+    }
+]
+
+for i, comment_data in enumerate(test_comments, 1):
+    print(f"Trying approach {i}...")
+    resp = requests.post(url, headers=headers, json=comment_data)
+    
+    if resp.status_code == 201:
+        print(f"SUCCESS: {comment_data['body']}")
+        break  # Stop after first success
+    else:
+        print(f"Failed: {resp.status_code}")
+        print(f"Response: {resp.text}")
+
+print("Test completed")
