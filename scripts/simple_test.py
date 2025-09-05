@@ -8,6 +8,6 @@ def greet():
 
 x = 5
 print("This is a test")
-# Modified via git command 
+print("inline comment test 9876543210") 
 def new_function(): 
     return "modified locally" 
