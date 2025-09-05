@@ -10,44 +10,56 @@ headers = {
     "Accept": "application/vnd.github.v3+json"
 }
 
+# Get the files that are actually changed in this PR
+files_url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/files"
+files_resp = requests.get(files_url, headers=headers)
+changed_files = files_resp.json()
+
+print("Files changed in this PR:")
+for file in changed_files:
+    print(f"  - {file['filename']}")
+
 # Get latest commit SHA
 commits_url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/commits"
 commits_resp = requests.get(commits_url, headers=headers)
-commits_resp.raise_for_status()
 latest_commit_sha = commits_resp.json()[-1]["sha"]
 
-print(f"Using commit SHA: {latest_commit_sha}")
+# Find a Python file that was actually changed
+target_file = None
+for file in changed_files:
+    if file['filename'].endswith('.py') and file['filename'] != 'inline_comment.py':
+        target_file = file['filename']
+        break
 
-# Post inline comments on simple_test.py
+if not target_file:
+    print("No suitable Python files found in PR changes")
+    exit(1)
+
+print(f"Posting comments on: {target_file}")
+
+# Post inline comments on the file that actually changed
 url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/comments"
 
 comments = [
     {
-        "body": "Consider adding a docstring to document what this function does.",
+        "body": "Consider adding a docstring to document this function.",
         "commit_id": latest_commit_sha,
-        "path": "simple_test.py",
+        "path": target_file,
         "line": 1,
         "side": "RIGHT"
     },
     {
-        "body": "Good function implementation! Consider adding type hints for better code documentation.",
+        "body": "Good code structure! Consider adding type hints.",
         "commit_id": latest_commit_sha,
-        "path": "simple_test.py",
-        "line": 3,
-        "side": "RIGHT"
-    },
-    {
-        "body": "Consider using constants or configuration for hardcoded strings.",
-        "commit_id": latest_commit_sha,
-        "path": "simple_test.py",
-        "line": 4,
+        "path": target_file,
+        "line": 2,
         "side": "RIGHT"
     }
 ]
 
 success_count = 0
 for i, comment_data in enumerate(comments, 1):
-    print(f"Posting comment {i}/{len(comments)} on line {comment_data['line']}")
+    print(f"Posting comment {i}/{len(comments)} on {target_file}:line {comment_data['line']}")
     
     resp = requests.post(url, headers=headers, json=comment_data)
     
