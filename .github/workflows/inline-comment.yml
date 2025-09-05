@@ -1,26 +1,19 @@
 name: Inline Comment Bot
-
 on:
   pull_request:
-
+    types: [synchronize, opened, reopened]
 jobs:
   comment:
     runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write   # 👈 allows writing inline PR comments
-      contents: read
-
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
+      - name: Checkout repo
+        uses: actions/checkout@v3
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.x
-
+          python-version: '3.x'
       - name: Install requests
         run: pip install requests
-
       - name: Run inline comment script
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
