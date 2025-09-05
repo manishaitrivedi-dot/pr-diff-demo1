@@ -1,0 +1,38 @@
+name: Automated Inline PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Extract Python diffs
+        id: extractor
+        run: |
+          echo "Running diff extractor..."
+          git fetch origin main
+          git diff origin/main...HEAD -- '*.py' > diff.txt
+          echo "diff_body<<EOF" >> $GITHUB_OUTPUT
+          cat diff.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Comment inline on PR
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: python-diff
+          message: |
+            ⚡ **Python diff detected**
+            ```diff
+            ${{ steps.extractor.outputs.diff_body }}
+            ```
