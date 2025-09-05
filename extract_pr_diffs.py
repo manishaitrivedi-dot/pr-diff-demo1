@@ -21,8 +21,8 @@ def extract_pr_diffs(base_branch="origin/main", specific_file=None):
     # ]
 
     diff_cmd = [
-    "git", "diff", "HEAD~1", "HEAD", "--unified=0",
-    "--", file_pattern, f":(exclude){script_name}"
+        "git", "diff", "HEAD~1", "HEAD", "--unified=0",
+        "--", file_pattern, f":(exclude){script_name}"
     ]
     
     print(f"DEBUG: Command: {' '.join(diff_cmd)}")
