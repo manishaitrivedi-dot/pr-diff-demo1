@@ -7,7 +7,7 @@ def get_pr_files(repo, pr_number, headers):
     resp.raise_for_status()
     return resp.json()
 
-def post_inline_comments(repo, pr_number, comments_list):
+def post_inline_comments(repo, pr_number):
     GITHUB_TOKEN = os.environ["GH_TOKEN"]
     headers = {
         "Authorization": f"token {GITHUB_TOKEN}",
@@ -20,39 +20,50 @@ def post_inline_comments(repo, pr_number, comments_list):
     commits_resp.raise_for_status()
     latest_commit_sha = commits_resp.json()[-1]["sha"]
 
-    # Step 2: Post comments
-    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
-    success_count = 0
+    # Step 2: Get files in PR
+    files = get_pr_files(repo, pr_number, headers)
 
-    for comment in comments_list:
-        comment_data = {
-            "body": comment["message"],
-            "commit_id": latest_commit_sha,
-            "path": comment["file"],
-            "position": comment["position"],   # use patch position, not line
-            "side": "RIGHT"
-        }
-
-        resp = requests.post(url, headers=headers, json=comment_data)
-        if resp.status_code == 201:
-            print(f"✅ Posted: {comment['message']}")
-            success_count += 1
+    print("\n📋 Files in PR and their valid positions:\n")
+    for f in files:
+        print(f"▶ {f['filename']}")
+        if "patch" in f:
+            # Count lines in patch → these are valid "positions"
+            positions = [
+                i+1 for i, line in enumerate(f["patch"].splitlines())
+                if line.startswith("+") and not line.startswith("+++")
+            ]
+            print(f"Valid positions: {positions}")
         else:
-            print(f"❌ Failed: {comment['message']} — {resp.text}")
+            print("⚠️ No patch info available")
 
-    return success_count
+    # Step 3: Example comment on first valid line of simple_test.py
+    simple_file = next((f for f in files if f["filename"] == "simple_test.py"), None)
+    if not simple_file:
+        print("❌ simple_test.py not found in PR diff")
+        return
+
+    patch_lines = simple_file["patch"].splitlines()
+    # Find first added line
+    try:
+        position = next(i+1 for i, l in enumerate(patch_lines) if l.startswith("+") and not l.startswith("+++"))
+    except StopIteration:
+        print("❌ No added lines found in simple_test.py")
+        return
+
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
+    comment_data = {
+        "body": "💡 Automated comment: check this line",
+        "commit_id": latest_commit_sha,
+        "path": "simple_test.py",
+        "position": position
+    }
+
+    resp = requests.post(url, headers=headers, json=comment_data)
+    print("Status:", resp.status_code, resp.json())
 
 
 if __name__ == "__main__":
     repo = "manishaitrivedi-dot/pr-diff-demo1"
     pr_number = 3
 
-    # Use positions from the patch above
-    my_comments = [
-        {"file": "simple_test.py", "message": "💡 Add docstring to function", "position": 1},
-        {"file": "simple_test.py", "message": "⚡ Consider improving greet()", "position": 4},
-        {"file": "simple_test.py", "message": "🔍 Avoid hardcoded string", "position": 11},
-    ]
-
-    posted_count = post_inline_comments(repo, pr_number, my_comments)
-    print(f"\n✅ Successfully posted {posted_count} comments")
+    post_inline_comments(repo, pr_number)
