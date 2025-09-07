@@ -1,15 +1,17 @@
 def add_numbers(a, b):
     """Add two numbers and return the result"""
     return a + b
-
+#test5
 def subtract_numbers(a, b):
     """Subtract second number from first"""
     return a - b
-
+#test
 def greet_user(name):
     """Greet a user by name"""
     print(f"Hello, {name}!")
     return f"Greeting sent to {name}"
+#test2
+#test6
 
 def calculate_area(length, width):
     """Calculate area of a rectangle"""
