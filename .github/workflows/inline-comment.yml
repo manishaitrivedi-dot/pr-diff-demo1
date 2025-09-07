@@ -1,8 +1,10 @@
+# .github/workflows/review-bot.yml
 name: PR Review Bot
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened]   # runs on PRs
+  workflow_dispatch:                         # optional: allow manual runs
 
 permissions:
   contents: read
@@ -23,31 +25,30 @@ jobs:
       - name: Install deps
         run: pip install requests
 
-      # Step 1: Prepare LLM chunks (split code into safe windows + position map)
+      # 1) Split TARGET_FILE into LLM-friendly chunks (+ position map if PR)
       - name: Prepare LLM-friendly chunks
         env:
-          TARGET_FILE: scripts/simple_test.py
+          TARGET_FILE: simple_test.py                 # <-- set your exact path
           OWNER: ${{ github.repository_owner }}
-          REPO: ${{ github.event.repository.name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO:  ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}  # set automatically on PRs
           MAX_CHARS: "2500"
           CTX_LINES: "3"
           ONLY_DIFF: "true"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python prepare_llm_chunks.py
 
-      # (Optional) Save artifacts if you want to inspect what the LLM saw
-      - name: Upload chunk artifacts
+      - name: Upload chunk artifacts (optional)
         uses: actions/upload-artifact@v4
         with:
-          name: llm-chunks-${{ github.event.pull_request.number }}
+          name: llm-chunks-${{ github.event.pull_request.number || 'manual' }}
           path: |
             llm_chunks.json
             llm_chunks.md
             line_to_position.json
           if-no-files-found: ignore
 
-      # Step 2: Run inline comment script
+      # 2) Your existing inline commenter (unchanged)
       - name: Post inline comments
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
