@@ -1,25 +1,54 @@
-name: Inline Comment Bot
+name: PR Review Bot
+
 on:
   pull_request:
-    types: [synchronize, opened, reopened]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
-  comment:
+  review-bot:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-      - name: Install requests
+
+      - name: Install deps
         run: pip install requests
-      - name: Run inline comment script
+
+      # Step 1: Prepare LLM chunks (split code into safe windows + position map)
+      - name: Prepare LLM-friendly chunks
+        env:
+          TARGET_FILE: scripts/simple_test.py
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MAX_CHARS: "2500"
+          CTX_LINES: "3"
+          ONLY_DIFF: "true"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python prepare_llm_chunks.py
+
+      # (Optional) Save artifacts if you want to inspect what the LLM saw
+      - name: Upload chunk artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-chunks-${{ github.event.pull_request.number }}
+          path: |
+            llm_chunks.json
+            llm_chunks.md
+            line_to_position.json
+          if-no-files-found: ignore
+
+      # Step 2: Run inline comment script
+      - name: Post inline comments
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python inline_comment.py
