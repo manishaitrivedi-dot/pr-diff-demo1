@@ -1,4 +1,4 @@
-name: LLM Chunk + Inline Comments (Full-file)
+name: LLM Any-Line Annotations
 
 on:
   pull_request:
@@ -9,11 +9,10 @@ permissions:
   pull-requests: write
 
 jobs:
-  llm_pipeline:
+  annotate:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -24,29 +23,29 @@ jobs:
       - name: Install deps
         run: pip install requests
 
-      - name: Prepare LLM chunks (full file, but keep PR context)
+      # Optional: generate chunks (full-file) so your LLM can review and decide lines
+      - name: Prepare chunks (full file)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.event.repository.name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          TARGET_FILE: simple_test.py          # <-- set exact path
-          ONLY_DIFF: "false"                   # <-- full-file chunking
-          MAX_CHARS: "600"                     # small window so you can see multiple chunks
+          TARGET_FILE: simple_test.py      # <-- exact path
+          ONLY_DIFF: "false"               # full-file chunking
+          MAX_CHARS: "600"
           CTX_LINES: "3"
         run: python prepare_llm_chunks.py
 
-      - name: Post inline comments from chunks
+      # Post per-line annotations for ANY line (even if not in diff)
+      - name: Annotate chosen lines
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OWNER: ${{ github.repository_owner }}
-          REPO: ${{ github.event.repository.name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          TARGET_FILE: simple_test.py          # <-- same path
-          # Choose which file-lines to comment on (source lines in the new file)
+          TARGET_FILE: simple_test.py
+          # Choose the exact file lines you want to annotate.
+          # You can hardcode them or generate them from your LLM result.
           COMMENTS: |
             [
-              {"line": 5,  "message": "💡 Consider improving the docstring."},
-              {"line": 13, "message": "🔍 Maybe handle edge cases here?"}
+              {"line": 5,  "level": "notice", "message": "💡 Improve the docstring."},
+              {"line": 20, "level": "warning", "message": "⚠️ Handle invalid inputs here."},
+              {"line": 32, "level": "error",   "message": "❌ Potential bug: confirm types."}
             ]
-        run: python inline_comment_from_chunks.py
+        run: python annotate_any_line.py
