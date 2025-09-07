@@ -1,179 +1,83 @@
 # inline_comment.py
-import os
-import sys
-import requests
-from typing import Dict, List, Tuple, Optional
+# Posts inline review comments on a PR using the line_to_position.json
+# produced by prepare_llm_chunks.py. For demo, it comments on the first
+# two added lines of TARGET_FILE if available.
 
-# ========= CONFIGURE THESE TWO =========
-REPO = "manishaitrivedi-dot/pr-diff-demo1"   # owner/repo
-TARGET_FILE = "simple_test.py"                # file to comment on
-TARGET_LINES = [11, 13]                       # file line numbers to target
-# ======================================
+import os, json, requests
 
-API = "https://api.github.com"
-TOKEN = os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN")
+OWNER       = os.environ.get("OWNER", "").strip()
+REPO        = os.environ.get("REPO", "").strip()
+PR_NUMBER   = os.environ.get("PR_NUMBER")
+TARGET_FILE = os.environ.get("TARGET_FILE", "simple_test.py")
 
-if not TOKEN:
-    print("❌ Missing GH_TOKEN/GITHUB_TOKEN environment variable.")
-    sys.exit(1)
+def gh_headers():
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    return {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
 
-HEADERS = {
-    "Authorization": f"token {TOKEN}",
-    "Accept": "application/vnd.github+json",
-}
-
-def get_latest_open_pr(repo: str) -> Optional[int]:
-    """Return the number of the most recently created OPEN PR, or None."""
-    url = f"{API}/repos/{repo}/pulls"
-    params = {"state": "open", "sort": "created", "direction": "desc", "per_page": 1}
-    r = requests.get(url, headers=HEADERS, params=params)
+def last_commit_sha(owner, repo, pr_number, headers):
+    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/commits"
+    r = requests.get(url, headers=headers)
     r.raise_for_status()
-    items = r.json()
-    if not items:
-        return None
-    return items[0]["number"]
+    return r.json()[-1]["sha"]
 
-def get_latest_commit_sha(repo: str, pr_number: int) -> str:
-    url = f"{API}/repos/{repo}/pulls/{pr_number}/commits"
-    r = requests.get(url, headers=HEADERS)
-    r.raise_for_status()
-    commits = r.json()
-    return commits[-1]["sha"]
+def load_positions():
+    try:
+        with open("line_to_position.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
 
-def get_pr_files(repo: str, pr_number: int) -> List[dict]:
-    url = f"{API}/repos/{repo}/pulls/{pr_number}/files"
-    r = requests.get(url, headers=HEADERS)
-    r.raise_for_status()
-    return r.json()
-
-def build_line_to_position_map(patch: str) -> Tuple[Dict[int, int], List[int]]:
-    """
-    Create mapping: new-file line number -> GitHub 'position' for POST /pulls/:number/comments
-    Also return all positions in case you want to see what's valid.
-    Rules:
-      - Position 1 = first line AFTER the first '@@' hunk header in the file's patch.
-      - Count continues across multiple hunks until file ends.
-      - For '+': advance position and new_line++, and record mapping.
-      - For ' ' (context): advance position and new_line++.
-      - For '-': advance position only (deletion line).
-      - Ignore '+++', '---' headers and the '@@' lines themselves for counting.
-    """
-    line_to_pos: Dict[int, int] = {}
-    all_positions: List[int] = []
-
-    position = 0
-    new_line = None
-
-    for raw in patch.splitlines():
-        line = raw.rstrip("\n")
-
-        # Hunk header: @@ -old_start,old_count +new_start,new_count @@
-        if line.startswith("@@"):
-            # Parse new_start
-            # Example: @@ -1,2 +1,10 @@
-            try:
-                hunk = line.split("@@")[1].strip()  # '-1,2 +1,10'
-                parts = hunk.split()
-                plus = [p for p in parts if p.startswith("+")][0]
-                plus = plus.lstrip("+")
-                # "+a,b" or "+a"
-                if "," in plus:
-                    new_start = int(plus.split(",")[0])
-                else:
-                    new_start = int(plus)
-                new_line = new_start
-            except Exception:
-                # If parsing fails, we can't safely map—bail out of hunk.
-                new_line = None
-            continue
-
-        # Ignore file headers inside patch
-        if line.startswith("+++ ") or line.startswith("--- "):
-            continue
-
-        # Only count positions after first hunk header
-        if new_line is None:
-            continue
-
-        # Now count this line as a position
-        position += 1
-        all_positions.append(position)
-
-        if line.startswith("+") and not line.startswith("+++"):
-            # Addition line contributes to new file content
-            # Record mapping for this new_file line -> current position
-            line_to_pos[new_line] = position
-            new_line += 1
-        elif line.startswith("-") and not line.startswith("---"):
-            # Deletion: position advances, new_line does NOT
-            pass
-        else:
-            # Context (unchanged) line begins with space
-            # Some patches may show no leading char; be defensive:
-            if line[:1] == " " or (line and not line.startswith(("+", "-"))):
-                new_line += 1
-
-    return line_to_pos, all_positions
-
-def post_inline_comment(repo: str, pr_number: int, commit_sha: str,
-                        path: str, position: int, body: str) -> requests.Response:
-    url = f"{API}/repos/{repo}/pulls/{pr_number}/comments"
-    payload = {
-        "body": body,
-        "commit_id": commit_sha,
-        "path": path,
-        "position": position
-    }
-    r = requests.post(url, headers=HEADERS, json=payload)
+def post_comment(owner, repo, pr_number, commit_sha, path, position, body, headers):
+    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/comments"
+    payload = {"body": body, "commit_id": commit_sha, "path": path, "position": position}
+    r = requests.post(url, headers=headers, json=payload)
     return r
 
 def main():
-    # 1) Choose PR: latest open PR
-    pr_number = get_latest_open_pr(REPO)
-    if not pr_number:
-        print("❌ No open pull requests found. Create a PR first.")
-        sys.exit(0)
+    if not PR_NUMBER:
+        print("ℹ️ No PR context (PR_NUMBER is empty). Skipping inline comments.")
+        return
+    pr_number = int(PR_NUMBER)
 
-    print(f"ℹ️ Using latest open PR: #{pr_number}")
+    headers = gh_headers()
+    if not headers or not headers.get("Authorization"):
+        print("❌ Missing GH_TOKEN/GITHUB_TOKEN.")
+        return
 
-    # 2) Get latest commit SHA
-    commit_sha = get_latest_commit_sha(REPO, pr_number)
-    print(f"ℹ️ Latest commit SHA: {commit_sha}")
+    # Load the map new-file-line -> diff position
+    pos_map = load_positions()
+    file_map = pos_map.get(TARGET_FILE) or {}
 
-    # 3) Find our target file in the PR & get patch
-    files = get_pr_files(REPO, pr_number)
-    target_entry = next((f for f in files if f.get("filename") == TARGET_FILE), None)
-    if not target_entry:
-        print(f"❌ `{TARGET_FILE}` is NOT part of PR #{pr_number}. Nothing to comment.")
-        sys.exit(0)
+    if not file_map:
+        print(f"ℹ️ No position map for {TARGET_FILE}. Did prepare step run with ONLY_DIFF=true?")
+        return
 
-    patch = target_entry.get("patch")
-    if not patch:
-        print(f"❌ GitHub did not provide a patch for `{TARGET_FILE}` (possibly very large file or renamed-only).")
-        sys.exit(0)
+    # Sort by actual file line; pick first two positions for demo
+    items = sorted(((int(line), int(pos)) for line, pos in file_map.items()))
+    if not items:
+        print(f"ℹ️ No added lines found in {TARGET_FILE} for this PR.")
+        return
 
-    # 4) Build line→position map
-    line_to_pos, all_positions = build_line_to_position_map(patch)
+    commit_sha = last_commit_sha(OWNER, REPO, pr_number, headers)
 
-    # 5) Post comments for our fixed target lines (11 and 13)
-    total = 0
-    for ln in TARGET_LINES:
-        if ln not in line_to_pos:
-            print(f"⚠️ Line {ln} is not part of the PR diff for `{TARGET_FILE}`. Skipping.")
-            continue
-        pos = line_to_pos[ln]
-        body = f"🤖 Auto inline note on `{TARGET_FILE}` line {ln}."
-        resp = post_inline_comment(REPO, pr_number, commit_sha, TARGET_FILE, pos, body)
+    # Demo comments (customize or drive from your LLM output later)
+    planned = [
+        ("💡 Consider removing leftover debug comment.", 0),
+        ("🧹 Small style nit: consistent blank lines help readability.", 1),
+    ]
+
+    posted = 0
+    for msg, idx in planned:
+        if idx >= len(items): break
+        file_line, position = items[idx]
+        resp = post_comment(OWNER, REPO, pr_number, commit_sha, TARGET_FILE, position, msg, headers)
         if resp.status_code == 201:
-            print(f"✅ Comment posted on {TARGET_FILE}:{ln} (position {pos})")
-            total += 1
+            print(f"✅ Commented on {TARGET_FILE}:{file_line} (position {position}) — {msg}")
+            posted += 1
         else:
-            print(f"❌ Failed for {TARGET_FILE}:{ln} (position {pos}) — {resp.status_code} {resp.text}")
+            print("⚠️ Failed to comment:", resp.status_code, resp.text)
 
-    print(f"\nDone. Posted {total} comment(s).")
-    if total == 0:
-        print("👉 Tip: Make sure lines 11 and/or 13 are actually **added/changed** in this PR. "
-              "GitHub will only accept comments on lines that appear in the PR diff.")
+    print(f"\nPosted {posted} inline comment(s).")
 
 if __name__ == "__main__":
     main()
