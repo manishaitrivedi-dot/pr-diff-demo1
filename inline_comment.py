@@ -1,180 +1,179 @@
+# inline_comment.py
 import os
+import sys
 import requests
-import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple, Optional
 
-GH_TOKEN_ENV = "GH_TOKEN"   # or "GITHUB_TOKEN" if you prefer
+# ========= CONFIGURE THESE TWO =========
+REPO = "manishaitrivedi-dot/pr-diff-demo1"   # owner/repo
+TARGET_FILE = "simple_test.py"                # file to comment on
+TARGET_LINES = [11, 13]                       # file line numbers to target
+# ======================================
 
-# ------------ GitHub helpers ------------
+API = "https://api.github.com"
+TOKEN = os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN")
 
-def gh_headers(token: str) -> Dict[str, str]:
-    return {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github+json",
-    }
+if not TOKEN:
+    print("❌ Missing GH_TOKEN/GITHUB_TOKEN environment variable.")
+    sys.exit(1)
 
-def get_latest_open_pr(repo: str, headers: Dict[str, str]) -> Optional[int]:
-    """Return the most recently updated OPEN PR number, or None if none."""
-    url = f"https://api.github.com/repos/{repo}/pulls?state=open&sort=updated&direction=desc&per_page=1"
-    r = requests.get(url, headers=headers)
+HEADERS = {
+    "Authorization": f"token {TOKEN}",
+    "Accept": "application/vnd.github+json",
+}
+
+def get_latest_open_pr(repo: str) -> Optional[int]:
+    """Return the number of the most recently created OPEN PR, or None."""
+    url = f"{API}/repos/{repo}/pulls"
+    params = {"state": "open", "sort": "created", "direction": "desc", "per_page": 1}
+    r = requests.get(url, headers=HEADERS, params=params)
     r.raise_for_status()
-    data = r.json()
-    return data[0]["number"] if data else None
+    items = r.json()
+    if not items:
+        return None
+    return items[0]["number"]
 
-def get_pr_latest_commit_sha(repo: str, pr_number: int, headers: Dict[str, str]) -> str:
-    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/commits"
-    r = requests.get(url, headers=headers)
+def get_latest_commit_sha(repo: str, pr_number: int) -> str:
+    url = f"{API}/repos/{repo}/pulls/{pr_number}/commits"
+    r = requests.get(url, headers=HEADERS)
     r.raise_for_status()
-    return r.json()[-1]["sha"]
+    commits = r.json()
+    return commits[-1]["sha"]
 
-def get_pr_files(repo: str, pr_number: int, headers: Dict[str, str]) -> List[Dict]:
-    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files?per_page=100"
-    r = requests.get(url, headers=headers)
+def get_pr_files(repo: str, pr_number: int) -> List[dict]:
+    url = f"{API}/repos/{repo}/pulls/{pr_number}/files"
+    r = requests.get(url, headers=HEADERS)
     r.raise_for_status()
     return r.json()
 
-# ------------ Diff parsing --------------
-
-def build_newline_to_position_map(patch: str) -> Dict[int, int]:
+def build_line_to_position_map(patch: str) -> Tuple[Dict[int, int], List[int]]:
     """
-    Map 'new file' line numbers -> GitHub diff 'position' for a single file patch.
-    Position is the 1-based index across *all lines in the unified diff body*
-    (excluding @@ hunk headers), counting context/additions/deletions.
-    We also track the 'new file' line number and only map positions for added lines.
+    Create mapping: new-file line number -> GitHub 'position' for POST /pulls/:number/comments
+    Also return all positions in case you want to see what's valid.
+    Rules:
+      - Position 1 = first line AFTER the first '@@' hunk header in the file's patch.
+      - Count continues across multiple hunks until file ends.
+      - For '+': advance position and new_line++, and record mapping.
+      - For ' ' (context): advance position and new_line++.
+      - For '-': advance position only (deletion line).
+      - Ignore '+++', '---' headers and the '@@' lines themselves for counting.
     """
-    mapping: Dict[int, int] = {}
+    line_to_pos: Dict[int, int] = {}
+    all_positions: List[int] = []
 
-    if not patch:
-        return mapping
-
-    # Example hunk header: @@ -10,7 +10,9 @@
-    hunk_re = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
-
-    position = 0                 # counts lines in diff body (no @@ lines)
-    new_line = None              # current new-file line number in this hunk
+    position = 0
+    new_line = None
 
     for raw in patch.splitlines():
-        if raw.startswith("@@"):
-            m = hunk_re.match(raw)
-            if not m:
-                # Ignore malformed header safely
+        line = raw.rstrip("\n")
+
+        # Hunk header: @@ -old_start,old_count +new_start,new_count @@
+        if line.startswith("@@"):
+            # Parse new_start
+            # Example: @@ -1,2 +1,10 @@
+            try:
+                hunk = line.split("@@")[1].strip()  # '-1,2 +1,10'
+                parts = hunk.split()
+                plus = [p for p in parts if p.startswith("+")][0]
+                plus = plus.lstrip("+")
+                # "+a,b" or "+a"
+                if "," in plus:
+                    new_start = int(plus.split(",")[0])
+                else:
+                    new_start = int(plus)
+                new_line = new_start
+            except Exception:
+                # If parsing fails, we can't safely map—bail out of hunk.
                 new_line = None
-                continue
-            # Start line for the "new" file in this hunk
-            new_line = int(m.group(2))
             continue
 
-        # Only body lines (add/del/context) increment position
-        position += 1
+        # Ignore file headers inside patch
+        if line.startswith("+++ ") or line.startswith("--- "):
+            continue
 
+        # Only count positions after first hunk header
         if new_line is None:
-            # Shouldn't happen, but be robust
             continue
 
-        if raw.startswith("+") and not raw.startswith("+++"):
-            # Added line -> maps to a diff position; record it
-            mapping[new_line] = position
+        # Now count this line as a position
+        position += 1
+        all_positions.append(position)
+
+        if line.startswith("+") and not line.startswith("+++"):
+            # Addition line contributes to new file content
+            # Record mapping for this new_file line -> current position
+            line_to_pos[new_line] = position
             new_line += 1
-        elif raw.startswith("-") and not raw.startswith("---"):
-            # Removed line -> affects old file only
-            # new_line unchanged
+        elif line.startswith("-") and not line.startswith("---"):
+            # Deletion: position advances, new_line does NOT
             pass
         else:
-            # Context line ' ' (or anything else) -> advance new_line
-            new_line += 1
+            # Context (unchanged) line begins with space
+            # Some patches may show no leading char; be defensive:
+            if line[:1] == " " or (line and not line.startswith(("+", "-"))):
+                new_line += 1
 
-    return mapping
+    return line_to_pos, all_positions
 
-# ------------ Comment poster ------------
+def post_inline_comment(repo: str, pr_number: int, commit_sha: str,
+                        path: str, position: int, body: str) -> requests.Response:
+    url = f"{API}/repos/{repo}/pulls/{pr_number}/comments"
+    payload = {
+        "body": body,
+        "commit_id": commit_sha,
+        "path": path,
+        "position": position
+    }
+    r = requests.post(url, headers=HEADERS, json=payload)
+    return r
 
-def post_inline_comment_by_position(
-    repo: str,
-    pr_number: Optional[int],
-    file_path: str,
-    comments: List[Tuple[int, str]],  # [(new_file_line, message), ...]
-) -> int:
-    """
-    Post inline comments on a PR for a given file. 'comments' takes NEW FILE line numbers.
-    Only lines that are part of the diff (added/changed) will be commented using 'position'.
-    """
-    token = os.environ.get(GH_TOKEN_ENV)
-    if not token:
-        raise RuntimeError(f"Environment variable {GH_TOKEN_ENV} is required.")
+def main():
+    # 1) Choose PR: latest open PR
+    pr_number = get_latest_open_pr(REPO)
+    if not pr_number:
+        print("❌ No open pull requests found. Create a PR first.")
+        sys.exit(0)
 
-    headers = gh_headers(token)
+    print(f"ℹ️ Using latest open PR: #{pr_number}")
 
-    # Resolve PR number dynamically if needed
-    if pr_number is None:
-        pr_number = get_latest_open_pr(repo, headers)
-        if pr_number is None:
-            print("No open PRs found.")
-            return 0
-        print(f"ℹ️ Using latest open PR number: {pr_number}")
+    # 2) Get latest commit SHA
+    commit_sha = get_latest_commit_sha(REPO, pr_number)
+    print(f"ℹ️ Latest commit SHA: {commit_sha}")
 
-    # Get latest commit on the PR (required by API)
-    commit_sha = get_pr_latest_commit_sha(repo, pr_number, headers)
+    # 3) Find our target file in the PR & get patch
+    files = get_pr_files(REPO, pr_number)
+    target_entry = next((f for f in files if f.get("filename") == TARGET_FILE), None)
+    if not target_entry:
+        print(f"❌ `{TARGET_FILE}` is NOT part of PR #{pr_number}. Nothing to comment.")
+        sys.exit(0)
 
-    # Find the target file in the PR and get its patch
-    files = get_pr_files(repo, pr_number, headers)
-    target = next((f for f in files if f.get("filename") == file_path), None)
-    if not target:
-        print(f"⚠️ File '{file_path}' not found in PR #{pr_number}")
-        return 0
-
-    patch = target.get("patch")
+    patch = target_entry.get("patch")
     if not patch:
-        print(f"⚠️ No patch available for '{file_path}' in PR #{pr_number} (GitHub can omit very large patches).")
-        return 0
+        print(f"❌ GitHub did not provide a patch for `{TARGET_FILE}` (possibly very large file or renamed-only).")
+        sys.exit(0)
 
-    # Build mapping of NEW file line -> diff position
-    line_to_pos = build_newline_to_position_map(patch)
+    # 4) Build line→position map
+    line_to_pos, all_positions = build_line_to_position_map(patch)
 
-    # Post comments
-    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
-    posted = 0
-
-    for new_line, message in comments:
-        pos = line_to_pos.get(new_line)
-        if not pos:
-            print(f"↪️ Skipping line {new_line}: not part of the diff (or mapping unavailable).")
+    # 5) Post comments for our fixed target lines (11 and 13)
+    total = 0
+    for ln in TARGET_LINES:
+        if ln not in line_to_pos:
+            print(f"⚠️ Line {ln} is not part of the PR diff for `{TARGET_FILE}`. Skipping.")
             continue
-
-        payload = {
-            "body": message,
-            "commit_id": commit_sha,
-            "path": file_path,
-            "position": pos,     # <-- reliable for added/changed lines
-        }
-
-        resp = requests.post(url, headers=headers, json=payload)
+        pos = line_to_pos[ln]
+        body = f"🤖 Auto inline note on `{TARGET_FILE}` line {ln}."
+        resp = post_inline_comment(REPO, pr_number, commit_sha, TARGET_FILE, pos, body)
         if resp.status_code == 201:
-            print(f"✅ Commented on {file_path}:{new_line} (position {pos}) — {message}")
-            posted += 1
+            print(f"✅ Comment posted on {TARGET_FILE}:{ln} (position {pos})")
+            total += 1
         else:
-            print(f"❌ Failed on {file_path}:{new_line} (position {pos}) — {resp.status_code} {resp.text}")
+            print(f"❌ Failed for {TARGET_FILE}:{ln} (position {pos}) — {resp.status_code} {resp.text}")
 
-    return posted
-
-# ------------- Example usage -------------
+    print(f"\nDone. Posted {total} comment(s).")
+    if total == 0:
+        print("👉 Tip: Make sure lines 11 and/or 13 are actually **added/changed** in this PR. "
+              "GitHub will only accept comments on lines that appear in the PR diff.")
 
 if __name__ == "__main__":
-    REPO = "manishaitrivedi-dot/pr-diff-demo1"
-
-    # OPTION A: target a specific PR (e.g., #5)
-    PR_NUMBER = 5
-
-    # OPTION B: make it dynamic (use latest open PR)
-    # PR_NUMBER = None
-
-    # File you want to comment on (Python file)
-    FILE_PATH = "scripts/simple_test.py"   # adjust if your file is in repo root: "simple_test.py"
-
-    # List of (new_file_line_number, "message") you want to place.
-    # Pick line numbers that were *added/changed in this PR*.
-    MY_COMMENTS = [
-        (13, "💡 Consider removing leftover debug comment."),
-        (11, "✅ Nice use of f-strings."),
-    ]
-
-    count = post_inline_comment_by_position(REPO, PR_NUMBER, FILE_PATH, MY_COMMENTS)
-    print(f"\nPosted {count} inline comment(s).")
+    main()
