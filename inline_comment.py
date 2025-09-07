@@ -1,95 +1,161 @@
-# inline_comment_from_chunks.py
-# Posts inline comments on a PR for TARGET_FILE at specific *file* line numbers.
-# It uses line_to_position.json (written by prepare_llm_chunks.py in PR context)
-# to translate file-line -> diff "position" required by GitHub inline API.
-#
-# Env:
-#   GH_TOKEN / GITHUB_TOKEN
-#   OWNER, REPO, PR_NUMBER
-#   TARGET_FILE
-#   COMMENTS  (JSON array) e.g.:
-#     [
-#       {"line": 5,  "message": "💡 Consider improving the docstring."},
-#       {"line": 13, "message": "🔍 Maybe handle edge cases here?"}
-#     ]
+import os, json, re, requests
 
-import os, json, requests, sys
+HUNK_RE = re.compile(r"@@ -(?P<old_start>\d+),?(?P<old_count>\d+)? \+(?P<new_start>\d+),?(?P<new_count>\d+)? @@")
 
 def gh_headers():
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if not token:
-        raise RuntimeError("GH_TOKEN / GITHUB_TOKEN is required.")
-    return {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+        raise SystemExit("❌ GH_TOKEN/GITHUB_TOKEN not set")
+    return {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json"
+    }
 
-def get_latest_commit(owner, repo, pr_number, headers):
+def detect_pr_from_event():
+    """Read PR number from the GitHub event payload (so you don’t hardcode)."""
+    evt = os.environ.get("GITHUB_EVENT_PATH")
+    if not evt or not os.path.exists(evt):
+        return None
+    with open(evt, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    # pull_request event:
+    pr = data.get("pull_request")
+    if pr and "number" in pr:
+        return pr["number"]
+    # workflow_run and others won’t have it — return None
+    return None
+
+def get_last_commit_sha(owner, repo, pr_number, headers):
     url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/commits"
     r = requests.get(url, headers=headers)
     r.raise_for_status()
     commits = r.json()
-    if not commits:
-        raise RuntimeError("No commits found for PR.")
-    return commits[-1]["sha"]
+    return commits[-1]["sha"] if commits else None
+
+def get_pr_files(owner, repo, pr_number, headers):
+    files = []
+    page = 1
+    while True:
+        url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/files?per_page=100&page={page}"
+        r = requests.get(url, headers=headers)
+        r.raise_for_status()
+        batch = r.json()
+        if not batch:
+            break
+        files.extend(batch)
+        page += 1
+    return files
+
+def build_position_map(patch: str):
+    """Map new-file line -> diff position and return (map, added_lines_set)."""
+    if not patch:
+        return {}, set()
+    new_to_pos = {}
+    added = set()
+    pos = 0
+    current_new = None
+
+    for raw in patch.splitlines():
+        line = raw.rstrip("\n")
+        if line.startswith("@@"):
+            m = HUNK_RE.match(line)
+            pos += 1
+            if not m:
+                continue
+            current_new = int(m.group("new_start"))
+            continue
+        pos += 1
+        if line.startswith("+") and not line.startswith("+++"):
+            if current_new is not None:
+                new_to_pos[current_new] = pos
+                added.add(current_new)
+                current_new += 1
+        elif line.startswith(" "):
+            if current_new is not None:
+                current_new += 1
+        elif line.startswith("-"):
+            # deletion: don't advance new counter
+            pass
+    return new_to_pos, added
+
+def post_file_level_comment(owner, repo, pr_number, headers, path, body):
+    """
+    File-level review comment (no line). This shows up on the file in the PR,
+    even when the specific line isn’t in the diff.
+    """
+    # GitHub supports subject_type='file' on this endpoint
+    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/comments"
+    payload = {"body": body, "path": path, "subject_type": "file"}
+    r = requests.post(url, headers=headers, json=payload)
+    return r
+
+def post_inline_comment(owner, repo, pr_number, headers, commit_sha, path, position, body):
+    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/comments"
+    payload = {
+        "body": body,
+        "commit_id": commit_sha,
+        "path": path,
+        "position": position
+    }
+    r = requests.post(url, headers=headers, json=payload)
+    return r
 
 def main():
-    owner = os.environ.get("OWNER")
-    repo  = os.environ.get("REPO")
-    pr_env = os.environ.get("PR_NUMBER")
-    pr_number = int(pr_env) if pr_env and pr_env.isdigit() else None
-    target_file = os.environ.get("TARGET_FILE")
-    comments_raw = os.environ.get("COMMENTS", "[]")
-
-    if not (owner and repo and pr_number and target_file):
-        raise RuntimeError("OWNER, REPO, PR_NUMBER and TARGET_FILE env vars are required.")
-    try:
-        comments = json.loads(comments_raw)
-    except Exception as e:
-        raise RuntimeError(f"Invalid COMMENTS JSON: {e}")
-
     headers = gh_headers()
-    commit_sha = get_latest_commit(owner, repo, pr_number, headers)
 
-    # Load position map (if present)
-    pos_map = {}
-    if os.path.exists("line_to_position.json"):
-        with open("line_to_position.json", "r", encoding="utf-8") as f:
-            all_maps = json.load(f)
-            pos_map = all_maps.get(target_file, {})
-    else:
-        print("ℹ️ No line_to_position.json found. Lines not in the diff cannot be commented inline.")
+    repo_full = os.environ.get("GITHUB_REPOSITORY")
+    if not repo_full:
+        raise SystemExit("❌ GITHUB_REPOSITORY not set")
+    owner, repo = repo_full.split("/", 1)
 
-    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/comments"
+    pr_number = detect_pr_from_event()
+    if not pr_number:
+        raise SystemExit("❌ Could not detect PR number from event payload")
 
+    # Which file & which lines to comment?
+    # We read line_targets.json created by prepare_llm_chunks.py
+    target_file = os.environ.get("TARGET_FILE", "simple_test.py")
+    if not os.path.exists("line_targets.json"):
+        raise SystemExit("❌ line_targets.json not found. Run prepare_llm_chunks.py first.")
+    with open("line_targets.json", "r", encoding="utf-8") as f:
+        targets = json.load(f)
+    target_lines = targets.get(target_file, [])
+    if not target_lines:
+        print(f"ℹ️ No target lines listed for {target_file}. Nothing to do.")
+        return
+
+    # Get diff + commit
+    commit_sha = get_last_commit_sha(owner, repo, pr_number, headers)
+    pr_files = get_pr_files(owner, repo, pr_number, headers)
+    item = next((x for x in pr_files if x["filename"] == target_file), None)
+
+    position_map = {}
+    if item and item.get("patch"):
+        position_map, added_set = build_position_map(item["patch"])
+
+    # Post comments:
     posted = 0
-    for c in comments:
-        line = int(c["line"])
-        message = c["message"]
-
-        # Translate file line -> diff position
-        position = None
-        if pos_map:
-            position = pos_map.get(str(line))
-
-        if position is None:
-            print(f"↪️ Skipping line {line}: not part of the PR diff (no diff position).")
-            continue
-
-        payload = {
-            "body": message,
-            "commit_id": commit_sha,
-            "path": target_file,
-            "position": position  # using 'position' is still accepted & simple
-        }
-
-        resp = requests.post(url, headers=headers, json=payload)
-        if resp.status_code == 201:
-            print(f"✅ Commented on {target_file}:{line} (position {position}) — {message}")
-            posted += 1
+    for ln in target_lines:
+        body = f"🔎 Auto-review: check line {ln}."
+        if ln in position_map:
+            pos = position_map[ln]
+            r = post_inline_comment(owner, repo, pr_number, headers, commit_sha, target_file, pos, body)
+            if r.status_code == 201:
+                print(f"✅ Inline on {target_file}:{ln} (position {pos})")
+                posted += 1
+            else:
+                print(f"❌ Inline failed ({target_file}:{ln}): {r.status_code} {r.text}")
         else:
-            print(f"❌ Failed to comment {target_file}:{line} — {resp.status_code} {resp.text}")
+            # Fallback to file-level comment so you still see something on the file
+            r = post_file_level_comment(owner, repo, pr_number, headers, target_file,
+                                        f"{body}\n\n_(File-level comment because this line isn’t in the diff.)_")
+            if r.status_code in (200, 201):
+                print(f"📝 File-level comment on {target_file} for line {ln}")
+                posted += 1
+            else:
+                print(f"❌ File-level failed ({target_file}:{ln}): {r.status_code} {r.text}")
 
-    print(f"\nPosted {posted} inline comment(s).")
-    if posted == 0:
-        print("Note: GitHub only allows inline comments on lines that appear in the PR diff.")
+    print(f"\nPosted {posted} comment(s).")
 
 if __name__ == "__main__":
     main()
