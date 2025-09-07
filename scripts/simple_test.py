@@ -10,13 +10,13 @@ def greet_user(name):
     """Greet a user by name"""
     print(f"Hello, {name}!")
     return f"Greeting sent to {name}"
+#test2
 
 def calculate_area(length, width):
     """Calculate area of a rectangle"""
     if length <= 0 or width <= 0:
         raise ValueError("Length and width must be positive")
     return length * width
-# test1 
 
 class Calculator:
     """Simple calculator class"""
