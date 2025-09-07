@@ -1,18 +1,19 @@
-name: Inline Review
+name: LLM Chunk + Inline Comments (Full-file)
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
-  review:
+  llm_pipeline:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -23,33 +24,29 @@ jobs:
       - name: Install deps
         run: pip install requests
 
-      # 🔴 Make sure TARGET_FILE matches your real path: if the file is in repo root, use just "simple_test.py"
-      - name: Prepare LLM chunks (build position map)
+      - name: Prepare LLM chunks (full file, but keep PR context)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.event.repository.name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          TARGET_FILE: simple_test.py
-          ONLY_DIFF: "true"
-          MAX_CHARS: "800"     # small window for demo
+          TARGET_FILE: simple_test.py          # <-- set exact path
+          ONLY_DIFF: "false"                   # <-- full-file chunking
+          MAX_CHARS: "600"                     # small window so you can see multiple chunks
           CTX_LINES: "3"
         run: python prepare_llm_chunks.py
 
-      - name: Debug: show artifacts
-        run: |
-          echo "--- llm_chunks.json ---"
-          cat llm_chunks.json || true
-          echo "--- line_to_position.json ---"
-          cat line_to_position.json || true
-          echo "--- llm_chunks.md (first 120 lines) ---"
-          head -n 120 llm_chunks.md || true
-
-      - name: Post inline comments
+      - name: Post inline comments from chunks
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.event.repository.name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          TARGET_FILE: simple_test.py
-        run: python inline_comment.py
+          TARGET_FILE: simple_test.py          # <-- same path
+          # Choose which file-lines to comment on (source lines in the new file)
+          COMMENTS: |
+            [
+              {"line": 5,  "message": "💡 Consider improving the docstring."},
+              {"line": 13, "message": "🔍 Maybe handle edge cases here?"}
+            ]
+        run: python inline_comment_from_chunks.py
