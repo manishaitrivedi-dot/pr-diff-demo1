@@ -1,17 +1,16 @@
-# .github/workflows/review-bot.yml
-name: PR Review Bot
+name: Inline Review Demo
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]   # runs on PRs
-  workflow_dispatch:                         # optional: allow manual runs
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
 
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
-  review-bot:
+  review:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
@@ -25,31 +24,41 @@ jobs:
       - name: Install deps
         run: pip install requests
 
-      # 1) Split TARGET_FILE into LLM-friendly chunks (+ position map if PR)
-      - name: Prepare LLM-friendly chunks
+      # ---- PREPARE: split file for LLM + build line->position map for PR ----
+      - name: Prepare LLM chunks (changed-lines with context)
         env:
-          TARGET_FILE: simple_test.py                 # <-- set your exact path
+          # target the file you want to demo:
+          TARGET_FILE: simple_test.py
+          # pass PR context from the event:
           OWNER: ${{ github.repository_owner }}
-          REPO:  ${{ github.event.repository.name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}  # set automatically on PRs
-          MAX_CHARS: "2500"
-          CTX_LINES: "3"
+          REPO: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # produce chunks only around changed lines (recommended for PRs)
           ONLY_DIFF: "true"
+          # small max for demo; bump as you like
+          MAX_CHARS: "250"
+          # context lines around each change
+          CTX_LINES: "3"
+          # token (GitHub auto provides this)
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python prepare_llm_chunks.py
 
-      - name: Upload chunk artifacts (optional)
+      - name: Upload chunk artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: llm-chunks-${{ github.event.pull_request.number || 'manual' }}
+          name: llm-chunks
           path: |
             llm_chunks.json
             llm_chunks.md
             line_to_position.json
-          if-no-files-found: ignore
 
-      # 2) Your existing inline commenter (unchanged)
+      # ---- POST: add inline comments using the position map ----
       - name: Post inline comments
         env:
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          TARGET_FILE: simple_test.py
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python inline_comment.py
