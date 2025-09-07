@@ -10,42 +10,47 @@ permissions:
 
 jobs:
   annotate:
+    # Only run on PR events (prevents accidental push-to-main runs)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout PR branch
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # keep full diff context
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.11'
 
       - name: Install deps
-        run: pip install requests
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
 
-      # Optional: generate chunks (full-file) so your LLM can review and decide lines
-      - name: Prepare chunks (full file)
+      # Build chunks + (optionally) line->position map
+      # ONLY_DIFF=false means: chunk the *entire* file (not just diff).
+      - name: Prepare LLM chunks
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.event.repository.name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          TARGET_FILE: simple_test.py      # <-- exact path
-          ONLY_DIFF: "false"               # full-file chunking
-          MAX_CHARS: "600"
-          CTX_LINES: "3"
+          TARGET_FILE: scripts/simple_test.py
+          ONLY_DIFF: "false"
+          MAX_CHARS: "200"     # tiny on purpose so you can see multiple chunks
+          CTX_LINES: "2"
         run: python prepare_llm_chunks.py
 
-      # Post per-line annotations for ANY line (even if not in diff)
-      - name: Annotate chosen lines
+      # Post comments. Your script should:
+      # - use line_to_position.json if it exists (inline on diff lines)
+      # - otherwise fall back to a PR review summary (file-level) for any-line notes
+      - name: Post inline comments
         env:
-          TARGET_FILE: simple_test.py
-          # Choose the exact file lines you want to annotate.
-          # You can hardcode them or generate them from your LLM result.
-          COMMENTS: |
-            [
-              {"line": 5,  "level": "notice", "message": "💡 Improve the docstring."},
-              {"line": 20, "level": "warning", "message": "⚠️ Handle invalid inputs here."},
-              {"line": 32, "level": "error",   "message": "❌ Potential bug: confirm types."}
-            ]
-        run: python annotate_any_line.py
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python inline_comment.py
