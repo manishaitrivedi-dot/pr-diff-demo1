@@ -1,9 +1,8 @@
-name: Inline Review Demo
+name: Inline Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
-  workflow_dispatch:
+    types: [opened, reopened, synchronize]
 
 permissions:
   contents: read
@@ -13,7 +12,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -24,41 +23,33 @@ jobs:
       - name: Install deps
         run: pip install requests
 
-      # ---- PREPARE: split file for LLM + build line->position map for PR ----
-      - name: Prepare LLM chunks (changed-lines with context)
+      # 🔴 Make sure TARGET_FILE matches your real path: if the file is in repo root, use just "simple_test.py"
+      - name: Prepare LLM chunks (build position map)
         env:
-          # target the file you want to demo:
-          TARGET_FILE: simple_test.py
-          # pass PR context from the event:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.event.repository.name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          # produce chunks only around changed lines (recommended for PRs)
+          TARGET_FILE: simple_test.py
           ONLY_DIFF: "true"
-          # small max for demo; bump as you like
-          MAX_CHARS: "250"
-          # context lines around each change
+          MAX_CHARS: "800"     # small window for demo
           CTX_LINES: "3"
-          # token (GitHub auto provides this)
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python prepare_llm_chunks.py
 
-      - name: Upload chunk artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: llm-chunks
-          path: |
-            llm_chunks.json
-            llm_chunks.md
-            line_to_position.json
+      - name: Debug: show artifacts
+        run: |
+          echo "--- llm_chunks.json ---"
+          cat llm_chunks.json || true
+          echo "--- line_to_position.json ---"
+          cat line_to_position.json || true
+          echo "--- llm_chunks.md (first 120 lines) ---"
+          head -n 120 llm_chunks.md || true
 
-      # ---- POST: add inline comments using the position map ----
       - name: Post inline comments
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.event.repository.name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           TARGET_FILE: simple_test.py
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python inline_comment.py
