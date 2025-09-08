@@ -28,7 +28,7 @@ def chunk_full_file(text: str, max_chars: int):
 
 def main():
     if not os.path.exists(TARGET_FILE):
-        raise SystemExit(f"❌ {TARGET_FILE} not found in workspace")
+        raise SystemExit(f" {TARGET_FILE} not found in workspace")
 
     with open(TARGET_FILE, "r", encoding="utf-8", errors="ignore") as f:
         content = f.read()
@@ -51,8 +51,8 @@ def main():
     with open("line_targets.json", "w", encoding="utf-8") as f:
         json.dump({TARGET_FILE: MANUAL_TARGET_LINES}, f, indent=2)
 
-    print(f"✅ Wrote llm_chunks.json ({len(out)} chunk(s))")
-    print(f"✅ Wrote line_targets.json for {TARGET_FILE}: {MANUAL_TARGET_LINES}")
+    print(f"Wrote llm_chunks.json ({len(out)} chunk(s))")
+    print(f"Wrote line_targets.json for {TARGET_FILE}: {MANUAL_TARGET_LINES}")
 
 if __name__ == "__main__":
     main()
