@@ -12,6 +12,7 @@ def greet_user(name):
     print(f"Hello, {name}!")
     return f"Greeting sent to {name}"
 #test2
+
 #test6
 
 def calculate_area(length, width):
