@@ -1,9 +1,12 @@
 name: Inline Comment Bot
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened]
   push:
-    branches-ignore:
-      - main   # don’t run on direct pushes to main
+    branches:
+      - fix/simple-test   # include your PR branch explicitly
+      - main              # optional, if you want checks when pushing to main
   pull_request:
     types: [opened, synchronize, reopened]
 
