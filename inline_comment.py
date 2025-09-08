@@ -1,161 +1,180 @@
-import os, json, re, requests
+import os
+import requests
+import re
+from typing import Dict, List, Optional, Tuple
 
-HUNK_RE = re.compile(r"@@ -(?P<old_start>\d+),?(?P<old_count>\d+)? \+(?P<new_start>\d+),?(?P<new_count>\d+)? @@")
+GH_TOKEN_ENV = "GH_TOKEN"   # or "GITHUB_TOKEN" if you prefer
 
-def gh_headers():
-    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if not token:
-        raise SystemExit("❌ GH_TOKEN/GITHUB_TOKEN not set")
+# ------------ GitHub helpers ------------
+
+def gh_headers(token: str) -> Dict[str, str]:
     return {
         "Authorization": f"token {token}",
-        "Accept": "application/vnd.github+json"
+        "Accept": "application/vnd.github+json",
     }
 
-def detect_pr_from_event():
-    """Read PR number from the GitHub event payload (so you don’t hardcode)."""
-    evt = os.environ.get("GITHUB_EVENT_PATH")
-    if not evt or not os.path.exists(evt):
-        return None
-    with open(evt, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    # pull_request event:
-    pr = data.get("pull_request")
-    if pr and "number" in pr:
-        return pr["number"]
-    # workflow_run and others won’t have it — return None
-    return None
-
-def get_last_commit_sha(owner, repo, pr_number, headers):
-    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/commits"
+def get_latest_open_pr(repo: str, headers: Dict[str, str]) -> Optional[int]:
+    """Return the most recently updated OPEN PR number, or None if none."""
+    url = f"https://api.github.com/repos/{repo}/pulls?state=open&sort=updated&direction=desc&per_page=1"
     r = requests.get(url, headers=headers)
     r.raise_for_status()
-    commits = r.json()
-    return commits[-1]["sha"] if commits else None
+    data = r.json()
+    return data[0]["number"] if data else None
 
-def get_pr_files(owner, repo, pr_number, headers):
-    files = []
-    page = 1
-    while True:
-        url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/files?per_page=100&page={page}"
-        r = requests.get(url, headers=headers)
-        r.raise_for_status()
-        batch = r.json()
-        if not batch:
-            break
-        files.extend(batch)
-        page += 1
-    return files
+def get_pr_latest_commit_sha(repo: str, pr_number: int, headers: Dict[str, str]) -> str:
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/commits"
+    r = requests.get(url, headers=headers)
+    r.raise_for_status()
+    return r.json()[-1]["sha"]
 
-def build_position_map(patch: str):
-    """Map new-file line -> diff position and return (map, added_lines_set)."""
+def get_pr_files(repo: str, pr_number: int, headers: Dict[str, str]) -> List[Dict]:
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files?per_page=100"
+    r = requests.get(url, headers=headers)
+    r.raise_for_status()
+    return r.json()
+
+# ------------ Diff parsing --------------
+
+def build_newline_to_position_map(patch: str) -> Dict[int, int]:
+    """
+    Map 'new file' line numbers -> GitHub diff 'position' for a single file patch.
+    Position is the 1-based index across *all lines in the unified diff body*
+    (excluding @@ hunk headers), counting context/additions/deletions.
+    We also track the 'new file' line number and only map positions for added lines.
+    """
+    mapping: Dict[int, int] = {}
+
     if not patch:
-        return {}, set()
-    new_to_pos = {}
-    added = set()
-    pos = 0
-    current_new = None
+        return mapping
+
+    # Example hunk header: @@ -10,7 +10,9 @@
+    hunk_re = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+    position = 0                 # counts lines in diff body (no @@ lines)
+    new_line = None              # current new-file line number in this hunk
 
     for raw in patch.splitlines():
-        line = raw.rstrip("\n")
-        if line.startswith("@@"):
-            m = HUNK_RE.match(line)
-            pos += 1
+        if raw.startswith("@@"):
+            m = hunk_re.match(raw)
             if not m:
+                # Ignore malformed header safely
+                new_line = None
                 continue
-            current_new = int(m.group("new_start"))
+            # Start line for the "new" file in this hunk
+            new_line = int(m.group(2))
             continue
-        pos += 1
-        if line.startswith("+") and not line.startswith("+++"):
-            if current_new is not None:
-                new_to_pos[current_new] = pos
-                added.add(current_new)
-                current_new += 1
-        elif line.startswith(" "):
-            if current_new is not None:
-                current_new += 1
-        elif line.startswith("-"):
-            # deletion: don't advance new counter
+
+        # Only body lines (add/del/context) increment position
+        position += 1
+
+        if new_line is None:
+            # Shouldn't happen, but be robust
+            continue
+
+        if raw.startswith("+") and not raw.startswith("+++"):
+            # Added line -> maps to a diff position; record it
+            mapping[new_line] = position
+            new_line += 1
+        elif raw.startswith("-") and not raw.startswith("---"):
+            # Removed line -> affects old file only
+            # new_line unchanged
             pass
-    return new_to_pos, added
-
-def post_file_level_comment(owner, repo, pr_number, headers, path, body):
-    """
-    File-level review comment (no line). This shows up on the file in the PR,
-    even when the specific line isn’t in the diff.
-    """
-    # GitHub supports subject_type='file' on this endpoint
-    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/comments"
-    payload = {"body": body, "path": path, "subject_type": "file"}
-    r = requests.post(url, headers=headers, json=payload)
-    return r
-
-def post_inline_comment(owner, repo, pr_number, headers, commit_sha, path, position, body):
-    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/comments"
-    payload = {
-        "body": body,
-        "commit_id": commit_sha,
-        "path": path,
-        "position": position
-    }
-    r = requests.post(url, headers=headers, json=payload)
-    return r
-
-def main():
-    headers = gh_headers()
-
-    repo_full = os.environ.get("GITHUB_REPOSITORY")
-    if not repo_full:
-        raise SystemExit("❌ GITHUB_REPOSITORY not set")
-    owner, repo = repo_full.split("/", 1)
-
-    pr_number = detect_pr_from_event()
-    if not pr_number:
-        raise SystemExit("❌ Could not detect PR number from event payload")
-
-    # Which file & which lines to comment?
-    # We read line_targets.json created by prepare_llm_chunks.py
-    target_file = os.environ.get("TARGET_FILE", "simple_test.py")
-    if not os.path.exists("line_targets.json"):
-        raise SystemExit("❌ line_targets.json not found. Run prepare_llm_chunks.py first.")
-    with open("line_targets.json", "r", encoding="utf-8") as f:
-        targets = json.load(f)
-    target_lines = targets.get(target_file, [])
-    if not target_lines:
-        print(f"ℹ️ No target lines listed for {target_file}. Nothing to do.")
-        return
-
-    # Get diff + commit
-    commit_sha = get_last_commit_sha(owner, repo, pr_number, headers)
-    pr_files = get_pr_files(owner, repo, pr_number, headers)
-    item = next((x for x in pr_files if x["filename"] == target_file), None)
-
-    position_map = {}
-    if item and item.get("patch"):
-        position_map, added_set = build_position_map(item["patch"])
-
-    # Post comments:
-    posted = 0
-    for ln in target_lines:
-        body = f"🔎 Auto-review: check line {ln}."
-        if ln in position_map:
-            pos = position_map[ln]
-            r = post_inline_comment(owner, repo, pr_number, headers, commit_sha, target_file, pos, body)
-            if r.status_code == 201:
-                print(f"✅ Inline on {target_file}:{ln} (position {pos})")
-                posted += 1
-            else:
-                print(f"❌ Inline failed ({target_file}:{ln}): {r.status_code} {r.text}")
         else:
-            # Fallback to file-level comment so you still see something on the file
-            r = post_file_level_comment(owner, repo, pr_number, headers, target_file,
-                                        f"{body}\n\n_(File-level comment because this line isn’t in the diff.)_")
-            if r.status_code in (200, 201):
-                print(f"📝 File-level comment on {target_file} for line {ln}")
-                posted += 1
-            else:
-                print(f"❌ File-level failed ({target_file}:{ln}): {r.status_code} {r.text}")
+            # Context line ' ' (or anything else) -> advance new_line
+            new_line += 1
 
-    print(f"\nPosted {posted} comment(s).")
+    return mapping
+
+# ------------ Comment poster ------------
+
+def post_inline_comment_by_position(
+    repo: str,
+    pr_number: Optional[int],
+    file_path: str,
+    comments: List[Tuple[int, str]],  # [(new_file_line, message), ...]
+) -> int:
+    """
+    Post inline comments on a PR for a given file. 'comments' takes NEW FILE line numbers.
+    Only lines that are part of the diff (added/changed) will be commented using 'position'.
+    """
+    token = os.environ.get(GH_TOKEN_ENV)
+    if not token:
+        raise RuntimeError(f"Environment variable {GH_TOKEN_ENV} is required.")
+
+    headers = gh_headers(token)
+
+    # Resolve PR number dynamically if needed
+    if pr_number is None:
+        pr_number = get_latest_open_pr(repo, headers)
+        if pr_number is None:
+            print("No open PRs found.")
+            return 0
+        print(f" Using latest open PR number: {pr_number}")
+
+    # Get latest commit on the PR (required by API)
+    commit_sha = get_pr_latest_commit_sha(repo, pr_number, headers)
+
+    # Find the target file in the PR and get its patch
+    files = get_pr_files(repo, pr_number, headers)
+    target = next((f for f in files if f.get("filename") == file_path), None)
+    if not target:
+        print(f" File '{file_path}' not found in PR #{pr_number}")
+        return 0
+
+    patch = target.get("patch")
+    if not patch:
+        print(f" No patch available for '{file_path}' in PR #{pr_number} (GitHub can omit very large patches).")
+        return 0
+
+    # Build mapping of NEW file line -> diff position
+    line_to_pos = build_newline_to_position_map(patch)
+
+    # Post comments
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
+    posted = 0
+
+    for new_line, message in comments:
+        pos = line_to_pos.get(new_line)
+        if not pos:
+            print(f" Skipping line {new_line}: not part of the diff (or mapping unavailable).")
+            continue
+
+        payload = {
+            "body": message,
+            "commit_id": commit_sha,
+            "path": file_path,
+            "position": pos,     # <-- reliable for added/changed lines
+        }
+
+        resp = requests.post(url, headers=headers, json=payload)
+        if resp.status_code == 201:
+            print(f" Commented on {file_path}:{new_line} (position {pos}) — {message}")
+            posted += 1
+        else:
+            print(f" Failed on {file_path}:{new_line} (position {pos}) — {resp.status_code} {resp.text}")
+
+    return posted
+
+# ------------- Example usage -------------
 
 if __name__ == "__main__":
-    main()
+    REPO = "manishaitrivedi-dot/pr-diff-demo1"
+
+    # OPTION A: target a specific PR (e.g., #5)
+    PR_NUMBER = 5
+
+    # OPTION B: make it dynamic (use latest open PR)
+    # PR_NUMBER = None
+
+    # File you want to comment on (Python file)
+    FILE_PATH = "scripts/simple_test.py"   # adjust if your file is in repo root: "simple_test.py"
+
+    # List of (new_file_line_number, "message") you want to place.
+    # Pick line numbers that were *added/changed in this PR*.
+    MY_COMMENTS = [
+        (13, " Consider removing leftover debug comment."),
+        (11, " Nice use of f-strings."),
+    ]
+
+    count = post_inline_comment_by_position(REPO, PR_NUMBER, FILE_PATH, MY_COMMENTS)
+    print(f"\nPosted {count} inline comment(s).")
