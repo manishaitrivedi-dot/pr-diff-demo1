@@ -1,25 +1,37 @@
-name: Inline Comment Bot
+name: Inline Bot (Minimal)
+
 on:
   pull_request:
-    types: [synchronize, opened, reopened]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number (manual run)"
+        required: false
 
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
-  comment:
+  run:
+    if: github.event_name == 'pull_request' || inputs.pr != ''
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-      - name: Install requests
+
+      - name: Install deps
         run: pip install requests
-      - name: Run inline comment script
+
+      - name: Run your bot
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python inline_comment.py
