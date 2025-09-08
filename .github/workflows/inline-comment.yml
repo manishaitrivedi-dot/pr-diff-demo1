@@ -1,6 +1,9 @@
 name: Inline Comment Bot
 
 on:
+  push:
+    branches-ignore:
+      - main   # don’t run on direct pushes to main
   pull_request:
     types: [opened, synchronize, reopened]
 
@@ -26,4 +29,5 @@ jobs:
       - name: Run inline comment script
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python inline_comment.py
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python scripts/inline_comment.py
