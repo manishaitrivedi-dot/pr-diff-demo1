@@ -1,57 +1,25 @@
-name: LLM Any-Line Annotations
-
+name: Inline Comment Bot
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
-  workflow_dispatch:
-    inputs:
-      pr:
-        description: "PR number (manual run)"
-        required: false
+    types: [synchronize, opened, reopened]
 
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
-  annotate:
-    if: github.event_name == 'pull_request' || inputs.pr != ''
+  comment:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout PR head
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
+      - name: Checkout repo
+        uses: actions/checkout@v3
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: '3.x'
-
-      - name: Install deps
+      - name: Install requests
         run: pip install requests
-
-      # Create a position map for changed lines in scripts/simple_test.py
-      - name: Prepare chunks (changed lines only)
+      - name: Run inline comment script
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OWNER: ${{ github.repository_owner }}
-          REPO: ${{ github.event.repository.name }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
-          TARGET_FILE: scripts/simple_test.py
-          ONLY_DIFF: "true"   # IMPORTANT: inline dot requires diff
-          MAX_CHARS: "4000"
-          CTX_LINES: "3"
-        run: python prepare_llm_chunks.py
-
-      # Post inline comments only where the diff allows it
-      - name: Post inline comments
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OWNER: ${{ github.repository_owner }}
-          REPO: ${{ github.event.repository.name }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
-          TARGET_FILE: scripts/simple_test.py
-          USE_POSITIONS: "true"   # use the generated map
         run: python inline_comment.py
