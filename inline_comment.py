@@ -172,8 +172,8 @@ if __name__ == "__main__":
     # List of (new_file_line_number, "message") you want to place.
     # Pick line numbers that were *added/changed in this PR*.
     MY_COMMENTS = [
-        (13, " Consider removing leftover debug comment."),
-        (11, " Nice use of f-strings."),
+        (15, " Consider removing leftover debug comment1."),
+        (10, " Nice use of f-strings."),
     ]
 
     count = post_inline_comment_by_position(REPO, PR_NUMBER, FILE_PATH, MY_COMMENTS)
