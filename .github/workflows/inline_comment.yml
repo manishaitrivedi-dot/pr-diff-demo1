@@ -4,10 +4,12 @@ on:
   push:
     branches:
       - fix/simple-test
+      - main
     paths:
       - "scripts/simple_test.py"   # only run when this file changes
   pull_request:
     branches:
+      - fix/simple-test
       - main
     types: [opened, synchronize, reopened]
     paths:
