@@ -1,13 +1,14 @@
-name: Inline Comment Bot
+name: Cortex Code Review
 on:
   pull_request:
     branches:
-      - main                # run when PRs target main
+      - main
     types: [opened, synchronize, reopened]
   push:
     branches:
-      - fix/**
       - main
+      - 'fix/simple-test'
+      - 'fix/**'
   workflow_dispatch:
 
 permissions:
@@ -19,14 +20,8 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - name: Debug workflow trigger
-        run: |
-          echo "Event name: ${{ github.event_name }}"
-          echo "Branch name: ${{ github.ref_name }}"
-          echo "Full ref: ${{ github.ref }}"
-          
-      - name: Checkout repo
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
         
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -34,32 +29,13 @@ jobs:
           python-version: "3.x"
           
       - name: Install dependencies
-        run: pip install requests snowflake-snowpark-python
-        
-      - name: Find PR number for push events
-        id: find-pr
-        if: github.event_name == 'push'
         run: |
-          # Find PR number associated with this branch
-          PR_NUMBER=$(gh pr list --head "${{ github.ref_name }}" --json number --jq '.[0].number // empty')
-          if [ -n "$PR_NUMBER" ]; then
-            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-            echo "Found PR #$PR_NUMBER for branch ${{ github.ref_name }}"
-          else
-            echo "No PR found for branch ${{ github.ref_name }}"
-            echo "pr_number=" >> $GITHUB_OUTPUT
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          pip install --upgrade pip
+          pip install requests snowflake-snowpark-python
           
-      - name: Run cortex python review script
-        if: |
-          (github.event_name == 'pull_request') || 
-          (github.event_name == 'push' && steps.find-pr.outputs.pr_number != '')
+      - name: Run Cortex code review
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || steps.find-pr.outputs.pr_number }}
-          # Snowflake credentials
+          # Snowflake credentials (optional since your script has them hardcoded)
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
@@ -69,19 +45,7 @@ jobs:
           SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
         run: python scripts/cortex_python_review.py
 
-      - name: Run inline comment script
-        if: |
-          (github.event_name == 'pull_request') || 
-          (github.event_name == 'push' && steps.find-pr.outputs.pr_number != '')
+      - name: Post inline comments
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || steps.find-pr.outputs.pr_number }}
-          # Snowflake credentials
-          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
-          SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
-          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
         run: python scripts/inline_comment.py
