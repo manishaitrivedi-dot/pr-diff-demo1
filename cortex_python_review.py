@@ -6,7 +6,7 @@ from snowflake.snowpark import Session
 # ---------------------
 # Config
 # ---------------------
-MODEL = "mistral-large2"   #  working base model
+MODEL = "mistral-large2"
 MAX_CODE_CHARS = 40_000
 FILE_TO_REVIEW = "simple_test.py"
 
@@ -25,7 +25,7 @@ cfg = {
 session = Session.builder.configs(cfg).create()
 
 # ---------------------
-# Prompt template (strict structure)
+# Prompt template (simplified for API compatibility)
 # ---------------------
 PROMPT_TEMPLATE = """Please act as a principal-level Python code reviewer.
 DO NOT include any of the instructions below in your output.
@@ -116,61 +116,214 @@ General Recommendations
 {PY_CODE}
 """
 
-def build_prompt(code_text: str, filename: str) -> str:
+
+def build_prompt(code_text: str) -> str:
     code_text = code_text[:MAX_CODE_CHARS]
-    return dedent(PROMPT_TEMPLATE).replace("{FILENAME}", filename).replace("{PY_CODE}", code_text)
+    return PROMPT_TEMPLATE.replace("{PY_CODE}", code_text)
 
 # ---------------------
-# Call Cortex model
+# Call Cortex model (fixed version)
 # ---------------------
-def review_with_cortex(filename: str, code_text: str) -> str:
-    prompt = build_prompt(code_text, filename).replace("'", "''")  # escape single quotes
+def review_with_cortex(code_text: str) -> str:
+    prompt = build_prompt(code_text)
+    
+    # Clean the prompt to avoid quote issues
+    clean_prompt = prompt.replace("'", "''").replace("\n", "\\n").replace("\r", "")
+    
+    # Use direct string approach (most compatible)
     query = f"""
         SELECT SNOWFLAKE.CORTEX.COMPLETE(
             '{MODEL}',
-            OBJECT_CONSTRUCT('prompt', '{prompt}')
+            '{clean_prompt}'
         )
     """
-    df = session.sql(query)
-    return df.collect()[0][0]
-
+    
+    try:
+        df = session.sql(query)
+        result = df.collect()[0][0]
+        return result
+    except Exception as e:
+        print(f"Cortex API error: {e}")
+        # Fallback with even simpler prompt
+        simple_prompt = f"Review this Python code for critical issues:\\n{code_text[:1000]}"
+        simple_prompt = simple_prompt.replace("'", "''")
+        
+        fallback_query = f"""
+            SELECT SNOWFLAKE.CORTEX.COMPLETE(
+                'llama3-8b',
+                '{simple_prompt}'
+            )
+        """
+        
+        df = session.sql(fallback_query)
+        return df.collect()[0][0]
 
 # ---------------------
-# Extract only critical findings
+# Extract critical findings
 # ---------------------
 def extract_critical_findings(review_text: str):
     findings = []
-    pattern = re.compile(
-        r"Severity:\s*Critical.*?Line\s+(\d+).*?Issue:\s*(.*?)\nRecommendation:\s*(.*?)(?=\n\d+\.|\Z)",
-        re.S
-    )
-    for match in pattern.finditer(review_text):
-        line_no, issue, rec = match.groups()
-        findings.append({
-            "line": int(line_no),
-            "issue": issue.strip(),
-            "recommendation": rec.strip()
-        })
+    
+    # Split by "---" or "LINE:" sections
+    sections = re.split(r'(?:---|LINE:)', review_text)
+    
+    for section in sections[1:]:  # Skip first empty section
+        lines = section.strip().split('\n')
+        finding = {}
+        
+        for line in lines:
+            if line.strip():
+                if line.upper().startswith('SEVERITY:'):
+                    severity = line.split(':', 1)[1].strip()
+                    finding['severity'] = severity
+                elif line.upper().startswith('ISSUE:'):
+                    issue = line.split(':', 1)[1].strip()
+                    finding['issue'] = issue
+                elif line.upper().startswith('RECOMMENDATION:'):
+                    rec = line.split(':', 1)[1].strip()
+                    finding['recommendation'] = rec
+                elif line.isdigit():
+                    finding['line'] = int(line)
+        
+        # Only include Critical severity findings
+        if finding.get('severity', '').upper() == 'CRITICAL' and finding.get('line'):
+            findings.append({
+                "line": finding['line'],
+                "issue": finding.get('issue', 'Critical issue found'),
+                "recommendation": finding.get('recommendation', 'Review and fix this issue')
+            })
+    
     return findings
+
+# ---------------------
+# GitHub comment posting
+# ---------------------
+def post_github_comments(criticals, full_review):
+    """Post comments to GitHub using existing inline_comment.py approach"""
+    
+    # Get environment variables
+    github_token = os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN')
+    if not github_token:
+        print("No GitHub token found, skipping comment posting")
+        return
+    
+    import requests
+    
+    REPO_OWNER = "manishaitrivedi-dot"
+    REPO_NAME = "pr-diff-demo1"
+    PR_NUMBER = int(os.environ.get('PR_NUMBER', 3))
+    
+    headers = {
+        "Authorization": f"token {github_token}",
+        "Accept": "application/vnd.github+json"
+    }
+    
+    # Get latest commit SHA
+    commits_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/pulls/{PR_NUMBER}/commits"
+    commits_resp = requests.get(commits_url, headers=headers)
+    if commits_resp.status_code != 200:
+        print("Failed to get commit SHA")
+        return
+    
+    commit_sha = commits_resp.json()[-1]["sha"]
+    
+    # Post general PR review
+    review_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/pulls/{PR_NUMBER}/reviews"
+    
+    review_body = f"""## Automated LLM Code Review
+    
+**File Reviewed:** {FILE_TO_REVIEW}
+**Critical Issues Found:** {len(criticals)}
+
+### Summary
+{full_review[:500]}...
+
+### Critical Issues
+"""
+    
+    for critical in criticals:
+        review_body += f"""
+**Line {critical['line']}:** {critical['issue']}
+*Recommendation:* {critical['recommendation']}
+"""
+    
+    review_data = {
+        "body": review_body,
+        "event": "COMMENT"
+    }
+    
+    review_resp = requests.post(review_url, headers=headers, json=review_data)
+    if review_resp.status_code == 200:
+        print("Posted general PR review")
+    else:
+        print(f"Failed to post PR review: {review_resp.status_code}")
+    
+    # Post inline comments for critical issues
+    comment_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/pulls/{PR_NUMBER}/comments"
+    
+    posted_count = 0
+    for critical in criticals:
+        comment_data = {
+            "body": f"**CRITICAL ISSUE**\\n\\n{critical['issue']}\\n\\n**Recommendation:** {critical['recommendation']}",
+            "commit_id": commit_sha,
+            "path": FILE_TO_REVIEW,
+            "line": critical['line'],
+            "side": "RIGHT"
+        }
+        
+        comment_resp = requests.post(comment_url, headers=headers, json=comment_data)
+        if comment_resp.status_code == 201:
+            posted_count += 1
+            print(f"Posted inline comment on line {critical['line']}")
+        else:
+            print(f"Failed to post inline comment on line {critical['line']}: {comment_resp.status_code}")
+    
+    print(f"Posted {posted_count}/{len(criticals)} inline comments")
 
 # ---------------------
 # Main
 # ---------------------
 if __name__ == "__main__":
-    code_text = Path(FILE_TO_REVIEW).read_text()
-    review = review_with_cortex(FILE_TO_REVIEW, code_text)
-
-    print("=== FULL REVIEW ===\n", review)
-
-    criticals = extract_critical_findings(review)
-
-    # Save to JSON
-    with open("review_output.json", "w") as f:
-        json.dump({
+    try:
+        # Read the file
+        if not os.path.exists(FILE_TO_REVIEW):
+            print(f"File {FILE_TO_REVIEW} not found")
+            exit(1)
+        
+        code_text = Path(FILE_TO_REVIEW).read_text()
+        print(f"Reviewing {FILE_TO_REVIEW} ({len(code_text)} characters)")
+        
+        # Get LLM review
+        print("Getting LLM review from Snowflake Cortex...")
+        review = review_with_cortex(code_text)
+        
+        print("=== FULL REVIEW ===")
+        print(review)
+        print("=" * 50)
+        
+        # Extract critical findings
+        criticals = extract_critical_findings(review)
+        print(f"Found {len(criticals)} critical issues")
+        
+        # Save to JSON
+        output_data = {
             "full_review": review,
             "criticals": criticals,
             "file": FILE_TO_REVIEW
-        }, f, indent=2)
-
-    # Call inline_comment.py
-    subprocess.run(["python", "inline_comment.py"])
+        }
+        
+        with open("review_output.json", "w") as f:
+            json.dump(output_data, f, indent=2)
+        
+        print("Saved review to review_output.json")
+        
+        # Post to GitHub if in CI environment
+        if os.environ.get('GITHUB_ACTIONS'):
+            print("Posting comments to GitHub...")
+            post_github_comments(criticals, review)
+        else:
+            print("Not in GitHub Actions, skipping comment posting")
+            
+    except Exception as e:
+        print(f"Error: {e}")
+        exit(1)
