@@ -124,15 +124,16 @@ def build_prompt(code_text: str, filename: str) -> str:
 # Call Cortex model
 # ---------------------
 def review_with_cortex(filename: str, code_text: str) -> str:
-    prompt = build_prompt(code_text, filename)
+    prompt = build_prompt(code_text, filename).replace("'", "''")  # escape single quotes
     query = f"""
         SELECT SNOWFLAKE.CORTEX.COMPLETE(
             '{MODEL}',
-            OBJECT_CONSTRUCT('prompt', %s)
+            OBJECT_CONSTRUCT('prompt', '{prompt}')
         )
     """
-    df = session.sql(query, [prompt])
+    df = session.sql(query)
     return df.collect()[0][0]
+
 
 # ---------------------
 # Extract only critical findings
