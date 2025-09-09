@@ -1,35 +1,31 @@
-# cortex_python_review.py
-import os, re, subprocess
+import os, json, re, subprocess
 from pathlib import Path
+from textwrap import dedent
 from snowflake.snowpark import Session
-from snowflake.cortex import complete, CompleteOptions
 
 # ---------------------
 # Config
 # ---------------------
-MODEL = "llama3.1-8b-instruct"   # or "mistral-7b-instruct" if 70B unavailable
+MODEL = "meta/llama-3.1-8b"   # ✅ working base model
 MAX_CODE_CHARS = 40_000
 FILE_TO_REVIEW = "simple_test.py"
 
 # ---------------------
-# Create Snowflake session
+# Snowflake session
 # ---------------------
-def snowflake_session_from_env():
-    cfg = {
-        "account": "XKB93357.us-west-2",
-        "user": "MANISHAT007",
-        "password": "Welcome@987654321",
-        "role": "ORGADMIN",
-        "warehouse": "COMPUTE_WH",
-        "database": "MY_DB",
-        "schema": "PUBLIC",
-    }
-    return Session.builder.configs(cfg).create()
-
-session = snowflake_session_from_env()
+cfg = {
+    "account": "XKB93357.us-west-2",
+    "user": "MANISHAT007",
+    "password": "Welcome@987654321",
+    "role": "ORGADMIN",
+    "warehouse": "COMPUTE_WH",
+    "database": "MY_DB",
+    "schema": "PUBLIC",
+}
+session = Session.builder.configs(cfg).create()
 
 # ---------------------
-# Prompt template
+# Prompt template (strict structure)
 # ---------------------
 PROMPT_TEMPLATE = """Please act as a principal-level Python code reviewer.
 DO NOT include any of the instructions below in your output.
@@ -120,26 +116,26 @@ General Recommendations
 {PY_CODE}
 """
 
-
 def build_prompt(code_text: str, filename: str) -> str:
     code_text = code_text[:MAX_CODE_CHARS]
-    return PROMPT_TEMPLATE.replace("{FILENAME}", filename) + f"\n```python\n{code_text}\n```"
+    return dedent(PROMPT_TEMPLATE).replace("{FILENAME}", filename).replace("{PY_CODE}", code_text)
 
 # ---------------------
-# Cortex call
+# Call Cortex model
 # ---------------------
 def review_with_cortex(filename: str, code_text: str) -> str:
     prompt = build_prompt(code_text, filename)
-    out = complete(
-        model=MODEL,
-        prompt=prompt,
-        session=session,
-        options=CompleteOptions(temperature=0)
-    )
-    return out
+    query = f"""
+        SELECT SNOWFLAKE.CORTEX.COMPLETE(
+            '{MODEL}',
+            OBJECT_CONSTRUCT('prompt', %s)
+        )
+    """
+    df = session.sql(query, [prompt])
+    return df.collect()[0][0]
 
 # ---------------------
-# Extract Critical Issues
+# Extract only critical findings
 # ---------------------
 def extract_critical_findings(review_text: str):
     findings = []
@@ -162,12 +158,12 @@ def extract_critical_findings(review_text: str):
 if __name__ == "__main__":
     code_text = Path(FILE_TO_REVIEW).read_text()
     review = review_with_cortex(FILE_TO_REVIEW, code_text)
+
     print("=== FULL REVIEW ===\n", review)
 
     criticals = extract_critical_findings(review)
 
-    # Save review + criticals to JSON for inline_comment.py
-    import json
+    # Save to JSON
     with open("review_output.json", "w") as f:
         json.dump({
             "full_review": review,
@@ -175,5 +171,5 @@ if __name__ == "__main__":
             "file": FILE_TO_REVIEW
         }, f, indent=2)
 
-    # Call inline_comment.py to post comments
+    # Call inline_comment.py
     subprocess.run(["python", "inline_comment.py"])
