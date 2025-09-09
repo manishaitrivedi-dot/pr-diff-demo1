@@ -1,14 +1,17 @@
 name: Inline Comment Bot
 
 on:
-  pull_request:
-    branches:
-      - main                # run when PRs target main
-    types: [opened, synchronize, reopened]
   push:
     branches:
-      - fix/**
+      - fix/simple-test
+    paths:
+      - "scripts/simple_test.py"   # only run when this file changes
+  pull_request:
+    branches:
       - main
+    types: [opened, synchronize, reopened]
+    paths:
+      - "scripts/simple_test.py"
   workflow_dispatch:
 
 permissions:
@@ -19,20 +22,39 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
+      - name: Checkout PR code
         uses: actions/checkout@v3
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.x"
+          python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests snowflake-snowpark-python
+        run: |
+          pip install snowflake-snowpark-python requests
 
-      - name: Run inline comment script
+      - name: Run Cortex Review
         env:
+          SNOWFLAKE_ACCOUNT: "XKB93357.us-west-2"
+          SNOWFLAKE_USER: "MANISHAT007"
+          SNOWFLAKE_PASSWORD: "Welcome@987654321"
+          SNOWFLAKE_ROLE: "ORGADMIN"
+          SNOWFLAKE_WAREHOUSE: "COMPUTE_WH"
+          SNOWFLAKE_DATABASE: "MY_DB"
+          SNOWFLAKE_SCHEMA: "PUBLIC"
+        run: |
+          echo "🔍 Running Cortex Python Review..."
+          python cortex_python_review.py
+
+      - name: Post inline comments to PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: python scripts/inline_comment.py
+        run: |
+          echo "💬 Posting inline comments to PR #${{ github.event.pull_request.number }}"
+          python scripts/inline_comment.py
