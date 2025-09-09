@@ -6,6 +6,7 @@ on:
     types: [opened, synchronize, reopened]
   push:
     branches:
+      - fix/simple-test 
       - fix/**
       - main
   workflow_dispatch:
