@@ -5,7 +5,7 @@ def add_numbers(a, b):
 def subtract_numbers(a, b):
     """Subtract second number from first"""
     return a - b
- 
+
 def greet_user(name):
     """Greet a user by name"""
     print(f"Hello, {name}!")
