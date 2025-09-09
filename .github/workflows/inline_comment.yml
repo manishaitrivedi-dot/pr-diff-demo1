@@ -6,11 +6,9 @@ on:
     branches: 
       - main
   workflow_dispatch:
-
 permissions:
   contents: read
   pull-requests: write
-
 jobs:
   comment:
     runs-on: ubuntu-latest
@@ -29,9 +27,19 @@ jobs:
           pip install snowflake-snowpark-python[pandas]
           
       - name: Run LLM review
+        env:
+          SNOWFLAKE_ACCOUNT: "XKB93357.us-west-2"
+          SNOWFLAKE_USER: "MANISHAT007"
+          SNOWFLAKE_PASSWORD: "Welcome@987654321"
+          SNOWFLAKE_ROLE: "ORGADMIN"
+          SNOWFLAKE_WAREHOUSE: "COMPUTE_WH"
+          SNOWFLAKE_DATABASE: "MY_DB"
+          SNOWFLAKE_SCHEMA: "PUBLIC"
         run: python cortex_python_review.py
         
       - name: Post comments to GitHub
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '5' }}
         run: python scripts/inline_comment.py
