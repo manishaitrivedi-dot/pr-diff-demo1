@@ -6,7 +6,6 @@ on:
     types: [opened, synchronize, reopened]
   push:
     branches:
-      - fix/simple-test 
       - fix/**
       - main
   workflow_dispatch:
@@ -20,6 +19,12 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
+      - name: Debug workflow trigger
+        run: |
+          echo "Event name: ${{ github.event_name }}"
+          echo "Branch name: ${{ github.ref_name }}"
+          echo "Full ref: ${{ github.ref }}"
+          
       - name: Checkout repo
         uses: actions/checkout@v3
         
