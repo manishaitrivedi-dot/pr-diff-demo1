@@ -5,6 +5,7 @@ on:
     types: [opened, synchronize]
   push:
     branches:
+      - fix/simple-test 
       - main
   workflow_dispatch:
 
