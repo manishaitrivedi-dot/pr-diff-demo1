@@ -2,11 +2,11 @@ name: Inline Comment Bot
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
-  push:
     branches:
-      - fix/simple-test 
-      - main
+      - fix/simple-test
+    paths:
+      - "scripts/simple_test.py"
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
