@@ -3,12 +3,17 @@ name: Inline Comment Bot
 on:
   pull_request:
     branches:
-      - main                       # target branch of the PR
+      - main
+    paths:
+      - "scripts/simple_test.py"
+    types: [opened, synchronize, reopened]
+  push:
+    branches:
       - fix/simple-test
     paths:
-      - "scripts/simple_test.py"   # only trigger if this file changes
-    types: [opened, synchronize, reopened]
+      - "scripts/simple_test.py"
   workflow_dispatch:
+
 
 permissions:
   contents: read
