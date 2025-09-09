@@ -1,33 +1,61 @@
-name: Inline Comment Bot
+name: LLM Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
-  push:
-    branches:
-      - fix/simple-test   # include your PR branch explicitly
-      - main              # optional
-
-permissions:
-  contents: read
-  pull-requests: write
+    types: [opened, synchronize]
 
 jobs:
-  comment:
+  review:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
+      - name: Checkout PR code
         uses: actions/checkout@v3
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.x'
+          python-version: "3.11"
 
-      - name: Install requests
-        run: pip install requests
+      - name: Install dependencies
+        run: |
+          pip install snowflake-snowpark-python requests
 
-      - name: Run inline comment script
+      - name: Run Cortex Review
+        name: LLM Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install snowflake-snowpark-python requests
+
+      - name: Run Cortex Review
         env:
+          SNOWFLAKE_ACCOUNT: "XKB93357.us-west-2"
+          SNOWFLAKE_USER: "MANISHAT007"
+          SNOWFLAKE_PASSWORD: "Welcome@987654321"
+          SNOWFLAKE_ROLE: "ORGADMIN"
+          SNOWFLAKE_WAREHOUSE: "COMPUTE_WH"
+          SNOWFLAKE_DATABASE: "MY_DB"
+          SNOWFLAKE_SCHEMA: "PUBLIC"
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python inline_comment.py
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python cortex_python_review.py
