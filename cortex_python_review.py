@@ -8,7 +8,7 @@ from snowflake.snowpark import Session
 # ---------------------
 MODEL = "mistral-large2"
 MAX_CODE_CHARS = 40_000
-FILE_TO_REVIEW = "simple_test.py"
+FILE_TO_REVIEW = "scripts/simple_test.py"
 
 # ---------------------
 # Snowflake session
