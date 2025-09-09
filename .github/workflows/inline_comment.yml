@@ -1,36 +1,37 @@
 name: Inline Comment Bot
+
 on:
   pull_request:
-    types: [synchronize, opened, reopened]
+    types: [opened, synchronize]
   push:
-    branches: 
+    branches:
       - main
-      - feature-test
-      - fix/simple-test
   workflow_dispatch:
 
 permissions:
   contents: read
   pull-requests: write
+  issues: write
 
 jobs:
-  comment:
+  review:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
-        
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          python-version: '3.11'
+          fetch-depth: 0
+          
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
           
       - name: Install dependencies
         run: |
-          pip install requests
-          pip install snowflake-snowpark-python[pandas]
+          pip install snowflake-snowpark-python[pandas] requests
           
-      - name: Run LLM review
+      - name: Run Cortex Review
         env:
           SNOWFLAKE_ACCOUNT: "XKB93357.us-west-2"
           SNOWFLAKE_USER: "MANISHAT007"
@@ -39,13 +40,16 @@ jobs:
           SNOWFLAKE_WAREHOUSE: "COMPUTE_WH"
           SNOWFLAKE_DATABASE: "MY_DB"
           SNOWFLAKE_SCHEMA: "PUBLIC"
-        run: python cortex_python_review.py
-        
-      - name: Post comments to GitHub
-        if: always()
+        run: |
+          echo "🔍 Running Cortex Python Review..."
+          python cortex_python_review.py
+          
+      - name: Post inline comments to PR
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: "5"
-        run: python scripts/inline_comment.py
+        run: |
+          echo "💬 Posting inline comments to PR #5"
+          python scripts/inline_comment.py
