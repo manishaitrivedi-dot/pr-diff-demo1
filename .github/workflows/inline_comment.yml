@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - main                       # target branch of the PR
+      - fix/simple-test
     paths:
       - "scripts/simple_test.py"   # only trigger if this file changes
     types: [opened, synchronize, reopened]
