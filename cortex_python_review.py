@@ -6,7 +6,7 @@ from snowflake.snowpark import Session
 # ---------------------
 # Config
 # ---------------------
-MODEL = "meta/llama-3.1-8b"   # ✅ working base model
+MODEL = "mistral-large2"   #  working base model
 MAX_CODE_CHARS = 40_000
 FILE_TO_REVIEW = "simple_test.py"
 
