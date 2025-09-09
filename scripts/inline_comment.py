@@ -1,45 +1,112 @@
-import os
-import requests
-def post_inline_comments(repo, pr_number, comments_list):
-    # Read token from environment variable
-    GITHUB_TOKEN = os.environ["GH_TOKEN"]
-    headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-    # get the latest commit SHA of the PR
-    commits_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/commits"
-    commits_resp = requests.get(commits_url, headers=headers)
-    commits_resp.raise_for_status()  # ensures error is raised if request fails
-    latest_commit_sha = commits_resp.json()[-1]["sha"]
-    # prepare API endpoint for posting comments
-    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
-    success_count = 0
-    for comment in comments_list:
-        comment_data = {
-            "body": comment["message"],
-            "commit_id": latest_commit_sha,
-            "path": comment["file"],
-            "line": comment["line"],
-            "side": "RIGHT"  # inline comment on the changed line
+import os, json, requests
+
+# Configuration - Hardcoded for your setup
+GH_TOKEN = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+REPO = "manishaitrivedi-dot/pr-diff-demo1"  # Hardcoded repo
+PR_NUMBER = "5"  # Hardcoded PR number
+
+if not GH_TOKEN:
+    print("Error: GH_TOKEN or GITHUB_TOKEN environment variable required")
+    exit(1)
+
+headers = {
+    "Authorization": f"token {GH_TOKEN}",
+    "Accept": "application/vnd.github.v3+json"
+}
+
+def post_pr_comment(body: str):
+    """Post general PR review comment"""
+    url = f"https://api.github.com/repos/{REPO}/issues/{PR_NUMBER}/comments"
+    response = requests.post(url, headers=headers, json={"body": body})
+    if response.status_code == 201:
+        print("Posted PR comment successfully")
+    else:
+        print(f"Failed to post PR comment: {response.status_code}")
+        print(f"Response: {response.text}")
+
+def post_inline_comments(comments):
+    """Post inline comments for critical issues only"""
+    # Get latest commit SHA for this PR
+    commits_url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/commits"
+    commits_response = requests.get(commits_url, headers=headers)
+    
+    if commits_response.status_code != 200:
+        print(f"Failed to get commits: {commits_response.status_code}")
+        return
+    
+    commits = commits_response.json()
+    latest_sha = commits[-1]["sha"]
+    print(f"Using commit SHA: {latest_sha}")
+    
+    comment_url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/comments"
+    posted_count = 0
+    
+    for c in comments:
+        data = {
+            "body": c["body"],
+            "commit_id": latest_sha,
+            "path": c["path"],
+            "side": "RIGHT",
+            "line": c["line"]
         }
-        resp = requests.post(url, headers=headers, json=comment_data)
-        if resp.status_code == 201:
-            print(f"Posted: {comment['message']}")
-            success_count += 1
+        
+        response = requests.post(comment_url, headers=headers, json=data)
+        if response.status_code == 201:
+            print(f"Posted inline comment on line {c['line']}")
+            posted_count += 1
         else:
-            print(f"Failed: {comment['message']} — {resp.text}")
-    return success_count
+            print(f"Failed to post inline comment on line {c['line']}: {response.status_code}")
+            print(f"Response: {response.text}")
+    
+    print(f"Posted {posted_count}/{len(comments)} inline comments")
+
 if __name__ == "__main__":
-    # example usage
-    my_comments = [
-        {"file": "extract_pr_diffs.py", "line": 6, "message": "inline comment add 1"},
-        {"file": "extract_pr_diffs.py", "line": 7, "message": "inline comment add 2"},
-        {"file": "extract_pr_diffs.py", "line": 8, "message": "inline comment add 3"}
-    ]
-    posted_count = post_inline_comments(
-        repo="manishaitrivedi-dot/pr-diff-demo1",
-        pr_number=3,
-        comments_list=my_comments
-    )
-    print(f"Successfully posted {posted_count} comments")
+    try:
+        print(f"Processing review for PR #{PR_NUMBER} in {REPO}")
+        
+        # Read the review output
+        with open("review_output.json") as f:
+            review_data = json.load(f)
+        
+        print(f"Found {len(review_data['criticals'])} critical issues")
+        
+        # Post overall PR review comment
+        review_body = f"""## Automated LLM Code Review
+
+**File Reviewed:** {review_data['file']}
+**Critical Issues Found:** {len(review_data['criticals'])}
+
+### Full Review:
+{review_data['full_review']}
+
+### Critical Issues Summary:
+"""
+        
+        for critical in review_data['criticals']:
+            review_body += f"- **Line {critical['line']}:** {critical['issue']}\n"
+        
+        review_body += "\n*Critical issues are also posted as inline comments on specific lines.*"
+        
+        post_pr_comment(review_body)
+        
+        # Prepare inline comments for critical findings only
+        inline_comments = []
+        for c in review_data["criticals"]:
+            inline_comments.append({
+                "path": review_data["file"],
+                "line": c["line"],
+                "body": f"**CRITICAL ISSUE**\n\n{c['issue']}\n\n**Recommendation:** {c['recommendation']}\n\n*Generated by automated LLM code review*"
+            })
+        
+        if inline_comments:
+            print(f"Posting {len(inline_comments)} critical inline comments...")
+            post_inline_comments(inline_comments)
+        else:
+            print("No critical issues found for inline comments")
+            
+    except FileNotFoundError:
+        print("review_output.json not found. Run cortex_python_review.py first.")
+        exit(1)
+    except Exception as e:
+        print(f"Error: {e}")
+        exit(1)
