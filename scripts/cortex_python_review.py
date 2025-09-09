@@ -2,11 +2,12 @@ import os, json, re, subprocess
 from pathlib import Path
 from textwrap import dedent
 from snowflake.snowpark import Session
+import pandas as pd
 
 # ---------------------
 # Config
 # ---------------------
-MODEL = "mistral-large2"
+MODEL = "llama3.1-70b"
 MAX_CODE_CHARS = 40_000
 FILE_TO_REVIEW = "scripts/simple_test.py"
 
@@ -25,39 +26,65 @@ cfg = {
 session = Session.builder.configs(cfg).create()
 
 # ---------------------
-# Prompt template
+# Your original prompt template
 # ---------------------
-PROMPT_TEMPLATE = """Act as a Python code reviewer. Review the following code and identify issues.
-
-For each issue found, provide:
-- Line number
-- Severity (Critical, High, Medium, Low)
-- Issue description  
-- Recommendation
-
-Focus on security, correctness, performance, and maintainability.
-
-Python code to review:
-```python
-{PY_CODE}
-```
-
-Provide response in this format:
-LINE: [number]
-SEVERITY: [Critical|High|Medium|Low]
-ISSUE: [description]
-RECOMMENDATION: [fix]
+PROMPT_TEMPLATE = """Please act as a principal-level Python code reviewer. Your review must be concise, accurate, and directly actionable, as it will be posted as a GitHub Pull Request comment.
 ---
+# CONTEXT: HOW TO REVIEW (Apply Silently)
+1.  **You are reviewing a code diff, NOT a full file.** Your input shows only the lines that have been changed. Lines starting with `+` are additions, lines with `-` are removals.
+2.  **Focus your review ONLY on the added or modified lines (`+` lines).** Do not comment on removed lines (`-`) unless their removal directly causes a bug in the added lines.
+3.  **Infer context.** The full file context is not available. Base your review on the provided diff. Line numbers are specified in the hunk headers (e.g., `@@ -old,len +new,len @@`).
+4.  **Your entire response MUST be under 65,000 characters.** Prioritize findings with `High` or `Critical` severity. If the review is extensive, omit `Low` severity findings to meet the length constraint.
+# REVIEW PRIORITIES (Strict Order)
+1.  Security & Correctness
+2.  Reliability & Error-handling
+3.  Performance & Complexity
+4.  Readability & Maintainability
+5.  Testability
+# ELIGIBILITY CRITERIA FOR FINDINGS (ALL must be met)
+-   **Evidence:** Quote the exact changed snippet (`+` lines) and cite the new line number.
+-   **Severity:** Assign {Low | Medium | High | Critical}.
+-   **Impact & Action:** Briefly explain the issue and provide a minimal, safe correction.
+-   **Non-trivial:** Skip purely stylistic nits (e.g., import order, line length) that a linter would catch.
+# HARD CONSTRAINTS (For accuracy & anti-hallucination)
+-   Do NOT propose APIs that don't exist for the imported modules.
+-   Treat parameters like `db_path` as correct dependency injection; do NOT call them hardcoded.
+-   NEVER suggest logging sensitive user data or internal paths. Suggest non-reversible fingerprints if context is needed.
+-   Do NOT recommend removing correct type hints or docstrings.
+-   If code in the diff is already correct and idiomatic, do NOT invent problems.
+---
+# OUTPUT FORMAT (Strict, professional, audit-ready)
+Your entire response MUST be under 65,000 characters. Prioritize findings with High or Critical severity. If the review is extensive, omit Low severity findings to meet the length constraint.
+## Code Review Summary
+*A 2-3 sentence high-level summary. Mention the key strengths and the most critical areas for improvement across all changed files.*
+---
+### Detailed Findings
+*A list of all material findings. If no significant issues are found, state "No significant issues found."*
+**File:** `path/to/your/file.py`
+-   **Severity:** {Critical | High | Medium | Low}
+-   **Line:** {line_number}
+-   **Function/Context:** `{function_name_if_applicable}`
+-   **Finding:** {A clear, concise description of the issue, its impact, and a recommended correction.}
+**(Repeat for each finding in each file)**
+---
+### Key Recommendations
+*Provide 2-3 high-level, actionable recommendations for improving the overall quality of the codebase based on the findings. Do not repeat the findings themselves.*
+---
+# CODE DIFF TO REVIEW
+{PY_CONTENT}
 """
 
 def build_prompt(code_text: str) -> str:
     code_text = code_text[:MAX_CODE_CHARS]
-    return PROMPT_TEMPLATE.replace("{PY_CODE}", code_text)
+    return PROMPT_TEMPLATE.replace("{PY_CONTENT}", code_text)
 
 # ---------------------
 # Call Cortex model
 # ---------------------
-def review_with_cortex(code_text: str) -> str:
+def review_with_cortex(model: str, code_text: str) -> dict:
+    """
+    Calls Cortex and returns structured JSON response
+    """
     prompt = build_prompt(code_text)
     
     # Clean the prompt to avoid quote issues
@@ -65,92 +92,154 @@ def review_with_cortex(code_text: str) -> str:
     
     query = f"""
         SELECT SNOWFLAKE.CORTEX.COMPLETE(
-            '{MODEL}',
+            '{model}',
             '{clean_prompt}'
         )
     """
     
     try:
+        print(f"Getting review from {model}...")
         df = session.sql(query)
         result = df.collect()[0][0]
-        return result
+        
+        print("=== RAW CORTEX RESPONSE ===")
+        print(result[:1000] + "..." if len(result) > 1000 else result)
+        print("=" * 50)
+        
+        # Try to parse as JSON
+        try:
+            json_response = json.loads(result)
+            print("Successfully parsed JSON response")
+            return json_response
+        except json.JSONDecodeError:
+            print("Response is not JSON format, attempting extraction...")
+            # Try to find JSON in response
+            json_start = result.find('{')
+            json_end = result.rfind('}') + 1
+            if json_start != -1 and json_end != 0:
+                json_str = result[json_start:json_end]
+                try:
+                    return json.loads(json_str)
+                except json.JSONDecodeError:
+                    pass
+            
+            # Return text response wrapped in basic structure
+            return {
+                "summary": "Analysis completed (text format)",
+                "detailed_findings": [],
+                "key_recommendations": ["Review text response manually"],
+                "raw_text": result
+            }
+        
     except Exception as e:
         print(f"Cortex API error: {e}")
-        # Fallback with simpler prompt
-        simple_prompt = f"Review this Python code for critical issues:\\n{code_text[:1000]}"
-        simple_prompt = simple_prompt.replace("'", "''")
-        
-        fallback_query = f"""
-            SELECT SNOWFLAKE.CORTEX.COMPLETE(
-                'llama3-8b',
-                '{simple_prompt}'
-            )
-        """
-        
-        df = session.sql(fallback_query)
-        return df.collect()[0][0]
+        return {
+            "summary": f"Error occurred: {e}",
+            "detailed_findings": [],
+            "key_recommendations": ["Manual review recommended due to API error"]
+        }
 
 # ---------------------
-# Extract critical findings
+# Filter LOW severity from JSON
 # ---------------------
-def extract_critical_findings(review_text: str):
+def filter_low_severity(json_response: dict) -> dict:
+    """Remove LOW severity findings from JSON response"""
+    filtered_response = json_response.copy()
+    
+    if "detailed_findings" in filtered_response:
+        original_count = len(filtered_response["detailed_findings"])
+        
+        filtered_findings = [
+            finding for finding in filtered_response["detailed_findings"]
+            if finding.get("severity", "").upper() != "LOW"
+        ]
+        
+        filtered_response["detailed_findings"] = filtered_findings
+        print(f"Filtered out {original_count - len(filtered_findings)} LOW severity findings")
+    
+    return filtered_response
+
+# ---------------------
+# Extract critical findings for inline comments (dynamic)
+# ---------------------
+def extract_critical_findings(json_response: dict) -> list:
+    """Extract CRITICAL findings for inline comments - NO hardcoded line numbers"""
     findings = []
     
-    # Split by "---" or "LINE:" sections
-    sections = re.split(r'(?:---|LINE:)', review_text)
+    detailed_findings = json_response.get("detailed_findings", [])
     
-    for section in sections[1:]:  # Skip first empty section
-        lines = section.strip().split('\n')
-        finding = {}
+    for finding in detailed_findings:
+        severity = finding.get("severity", "").upper()
+        line_number = finding.get("line_number")
         
-        for line in lines:
-            if line.strip():
-                if line.upper().startswith('SEVERITY:'):
-                    severity = line.split(':', 1)[1].strip()
-                    finding['severity'] = severity
-                elif line.upper().startswith('ISSUE:'):
-                    issue = line.split(':', 1)[1].strip()
-                    finding['issue'] = issue
-                elif line.upper().startswith('RECOMMENDATION:'):
-                    rec = line.split(':', 1)[1].strip()
-                    finding['recommendation'] = rec
-                elif line.isdigit():
-                    finding['line'] = int(line)
-        
-        # Only include Critical severity findings
-        if finding.get('severity', '').upper() == 'CRITICAL' and finding.get('line'):
+        # Only CRITICAL severity for inline comments
+        if severity == "CRITICAL" and line_number:
             findings.append({
-                "line": finding['line'],
-                "issue": finding.get('issue', 'Critical issue found'),
-                "recommendation": finding.get('recommendation', 'Review and fix this issue')
+                "line": int(line_number),
+                "issue": finding.get("finding", "Critical issue found"),
+                "recommendation": finding.get("finding", "Address this critical issue"),
+                "severity": severity
             })
     
-    # Add test critical findings for lines 11, 13, 15
-    test_findings = [
-        {
-            "line": 11,
-            "issue": "Using print() for output is not suitable for production code",
-            "recommendation": "Replace with proper logging framework"
-        },
-        {
-            "line": 13,
-            "issue": "Missing input validation for name parameter",
-            "recommendation": "Add validation to ensure name is not None or empty"
-        },
-        {
-            "line": 15,
-            "issue": "Generic error message provides insufficient debugging context",
-            "recommendation": "Include actual parameter values in error message"
-        }
-    ]
-    
-    # Combine LLM findings with test findings
-    findings.extend(test_findings)
+    print(f"Found {len(findings)} critical issues for inline comments")
+    if findings:
+        print(f"Critical lines: {[f['line'] for f in findings]}")
     
     return findings
 
 # ---------------------
-# Main
+# Format for PR display
+# ---------------------
+def format_for_pr_display(json_response: dict) -> str:
+    """Format JSON response for PR comment display"""
+    
+    # If there's a raw_text field, use original text format
+    if "raw_text" in json_response:
+        return json_response["raw_text"]
+    
+    summary = json_response.get("summary", "Code review completed")
+    findings = json_response.get("detailed_findings", [])
+    recommendations = json_response.get("key_recommendations", [])
+    
+    display_text = f"## Code Review Summary\n{summary}\n\n"
+    
+    if findings:
+        display_text += "### Detailed Findings\n\n"
+        
+        for i, finding in enumerate(findings, 1):
+            severity = finding.get("severity", "Unknown")
+            line = finding.get("line_number", "N/A")
+            file_path = finding.get("file_path", FILE_TO_REVIEW)
+            issue = finding.get("finding", "No description")
+            context = finding.get("function_context", "")
+            
+            severity_emoji = {
+                "CRITICAL": "🚨", 
+                "HIGH": "⚠️", 
+                "MEDIUM": "💡", 
+                "LOW": "ℹ️"
+            }.get(severity.upper(), "📝")
+            
+            display_text += f"**File:** `{file_path}`\n"
+            display_text += f"- **Severity:** {severity_emoji} {severity}\n"
+            display_text += f"- **Line:** {line}\n"
+            
+            if context:
+                display_text += f"- **Function/Context:** `{context}`\n"
+            
+            display_text += f"- **Finding:** {issue}\n\n"
+    
+    if recommendations:
+        display_text += "### Key Recommendations\n\n"
+        for i, rec in enumerate(recommendations, 1):
+            display_text += f"{i}. {rec}\n"
+    
+    display_text += "\n---\n*Generated by Snowflake Cortex AI (llama3.1-70b)*"
+    
+    return display_text
+
+# ---------------------
+# Main execution
 # ---------------------
 if __name__ == "__main__":
     try:
@@ -162,31 +251,61 @@ if __name__ == "__main__":
         code_text = Path(FILE_TO_REVIEW).read_text()
         print(f"Reviewing {FILE_TO_REVIEW} ({len(code_text)} characters)")
         
-        # Get LLM review
-        print("Getting LLM review from Snowflake Cortex...")
-        review = review_with_cortex(code_text)
+        # Call Cortex with your exact usage
+        print("Getting review from Cortex...")
+        report = review_with_cortex('llama3.1-70b', code_text)
         
-        print("=== FULL REVIEW ===")
-        print(review)
+        print("=== ORIGINAL JSON RESPONSE ===")
+        print(json.dumps(report, indent=2))
         print("=" * 50)
         
-        # Extract critical findings
-        criticals = extract_critical_findings(review)
-        print(f"Found {len(criticals)} critical issues")
+        # Create DataFrame as you wanted
+        detailed_findings = report.get("detailed_findings", [])
+        if detailed_findings:
+            df = pd.DataFrame(detailed_findings)
+            print("=== FINDINGS DATAFRAME ===")
+            print(df.to_string())
+            print("=" * 50)
+        else:
+            print("=== NO DETAILED FINDINGS FOR DATAFRAME ===")
         
-        # Save to JSON
+        # Filter LOW severity
+        filtered_json = filter_low_severity(report.copy())
+        
+        print("=== FILTERED JSON (NO LOW SEVERITY) ===")
+        print(json.dumps(filtered_json, indent=2))
+        print("=" * 50)
+        
+        # Extract critical findings for inline comments (dynamic, no hardcoded lines)
+        criticals = extract_critical_findings(filtered_json)
+        
+        # Format for PR display
+        formatted_review = format_for_pr_display(filtered_json)
+        
+        # Save output in the format your inline_comment.py expects
         output_data = {
-            "full_review": review,
-            "criticals": criticals,
+            "full_review": formatted_review,
+            "full_review_json": filtered_json,
+            "criticals": criticals,  # Dynamic based on LLM detection
             "file": FILE_TO_REVIEW
         }
         
         with open("review_output.json", "w") as f:
             json.dump(output_data, f, indent=2)
         
-        print("Saved review to review_output.json")
-        print(f"Critical issues on lines: {[c['line'] for c in criticals]}")
+        print("=== SUMMARY ===")
+        print(f"Total findings: {len(detailed_findings)}")
+        print(f"After LOW filtering: {len(filtered_json.get('detailed_findings', []))}")
+        print(f"Critical for inline comments: {len(criticals)}")
+        if criticals:
+            print(f"Critical lines: {[c['line'] for c in criticals]}")
+        print("Review saved to review_output.json")
+        
+        # Close Snowflake session
+        session.close()
             
     except Exception as e:
         print(f"Error: {e}")
+        if 'session' in locals():
+            session.close()
         exit(1)
