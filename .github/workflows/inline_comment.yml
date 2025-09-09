@@ -3,16 +3,13 @@ name: Inline Comment Bot
 on:
   pull_request:
     branches:
-      - main
-    paths:
-      - "scripts/simple_test.py"
+      - main                # PRs targeting main
     types: [opened, synchronize, reopened]
   push:
     branches:
-      - fix/simple-test
-    paths:
-      - "scripts/simple_test.py"
+      - fix/simple-test     # direct pushes to this branch
   workflow_dispatch:
+
 
 
 permissions:
