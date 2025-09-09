@@ -3,9 +3,9 @@ name: Inline Comment Bot
 on:
   pull_request:
     branches:
-      - fix/simple-test
+      - main                       # target branch of the PR
     paths:
-      - "scripts/simple_test.py"
+      - "scripts/simple_test.py"   # only trigger if this file changes
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
