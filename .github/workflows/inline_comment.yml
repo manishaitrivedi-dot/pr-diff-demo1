@@ -1,11 +1,13 @@
-name: Inline Commnet Bot
+name: Inline Comment Bot
 
 on:
   pull_request:
+    branches:
+      - main                # run when PRs target main
     types: [opened, synchronize, reopened]
   push:
     branches:
-      - fix/simple-test 
+      - fix/**
       - main
   workflow_dispatch:
 
@@ -17,40 +19,20 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout PR code
+      - name: Checkout repo
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
+          python-version: "3.x"
 
       - name: Install dependencies
-        run: |
-          pip install snowflake-snowpark-python requests
+        run: pip install requests snowflake-snowpark-python
 
-      - name: Run Cortex Review
+      - name: Run inline comment script
         env:
-          SNOWFLAKE_ACCOUNT: "XKB93357.us-west-2"
-          SNOWFLAKE_USER: "MANISHAT007"
-          SNOWFLAKE_PASSWORD: "Welcome@987654321"
-          SNOWFLAKE_ROLE: "ORGADMIN"
-          SNOWFLAKE_WAREHOUSE: "COMPUTE_WH"
-          SNOWFLAKE_DATABASE: "MY_DB"
-          SNOWFLAKE_SCHEMA: "PUBLIC"
-        run: |
-          echo "🔍 Running Cortex Python Review..."
-          python cortex_python_review.py
-
-      - name: Post inline comments to PR
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          # Use PR number dynamically from event payload
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          echo "💬 Posting inline comments to PR #${{ github.event.pull_request.number }}"
-          python scripts/inline_comment.py
+        run: python scripts/inline_comment.py
