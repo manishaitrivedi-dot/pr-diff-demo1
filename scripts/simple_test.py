@@ -10,6 +10,7 @@ def subtract_numbers(a, b):
     return a - b
 #test9
 
+
 def greet_user(name):
     """Greet a user by name"""
     print(f"Hello, {name}!")
