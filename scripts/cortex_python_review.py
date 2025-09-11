@@ -27,7 +27,7 @@ cfg = {
 session = Session.builder.configs(cfg).create()
 
 # ---------------------
-# Your original prompt template (keeping it the same)
+# Your original prompt template
 # ---------------------
 PROMPT_TEMPLATE = """Please act as a principal-level Python code reviewer. Your review must be concise, accurate, and directly actionable, as it will be posted as a GitHub Pull Request comment.
 
@@ -52,11 +52,6 @@ IMPORTANT: Return your response in JSON format with this exact structure:
 3.  Performance & Complexity
 4.  Readability & Maintainability
 5.  Testability
-
-# ELIGIBILITY CRITERIA FOR FINDINGS (ALL must be met)
--   **Evidence:** Quote the exact changed snippet and cite the line number.
--   **Severity:** Assign {Low | Medium | High | Critical}.
--   **Impact & Action:** Briefly explain the issue and provide a minimal, safe correction.
 
 # CODE TO REVIEW
 {PY_CONTENT}
@@ -94,7 +89,6 @@ def review_with_cortex(model: str, code_text: str) -> dict:
         
         # Try to parse as JSON first
         try:
-            # Look for JSON in the response
             json_start = result.find('{')
             json_end = result.rfind('}') + 1
             if json_start != -1 and json_end > json_start:
@@ -223,13 +217,6 @@ def get_sample_review_data() -> dict:
             },
             {
                 "file_path": FILE_TO_REVIEW,
-                "severity": "Medium",
-                "line_number": 89,
-                "function_context": "fetch_data",
-                "finding": "Multiple database calls in loop. Batch queries for better performance."
-            },
-            {
-                "file_path": FILE_TO_REVIEW,
                 "severity": "Low",
                 "line_number": 5,
                 "function_context": None,
@@ -240,13 +227,62 @@ def get_sample_review_data() -> dict:
             "Fix all SQL injection vulnerabilities immediately using parameterized queries",
             "Remove hardcoded credentials and implement secure secrets management",
             "Add comprehensive error handling for all external service calls",
-            "Optimize database queries by batching and adding proper indexes",
-            "Implement input validation layer for all user-facing endpoints"
+            "Optimize database queries by batching and adding proper indexes"
         ]
     }
 
 # ---------------------
-# Generate HTML Report with proper calculations
+# Extract critical findings for inline comments
+# ---------------------
+def extract_critical_findings(json_response: dict) -> list:
+    """Extract CRITICAL severity findings for inline comments format"""
+    criticals = []
+    
+    for finding in json_response.get("detailed_findings", []):
+        severity = finding.get("severity", "").upper()
+        line_number = finding.get("line_number")
+        
+        if severity == "CRITICAL" and line_number:
+            criticals.append({
+                "line": int(line_number),
+                "issue": finding.get("finding", "Critical issue found"),
+                "recommendation": f"Fix this critical issue: {finding.get('finding', 'Review required')}"
+            })
+    
+    return criticals
+
+# ---------------------
+# Format review for PR display
+# ---------------------
+def format_review_for_pr(json_response: dict) -> str:
+    """Format JSON response as text for PR comment"""
+    
+    summary = json_response.get("summary", "Code review completed")
+    findings = json_response.get("detailed_findings", [])
+    recommendations = json_response.get("key_recommendations", [])
+    
+    display_text = f"## Code Review Summary\n{summary}\n\n"
+    
+    if findings:
+        display_text += "### Detailed Findings\n\n"
+        for finding in findings:
+            severity = finding.get("severity", "Unknown")
+            line = finding.get("line_number", "N/A")
+            issue = finding.get("finding", "No description")
+            
+            display_text += f"**Severity:** {severity}\n"
+            display_text += f"**Line:** {line}\n"
+            display_text += f"**Finding:** {issue}\n\n"
+    
+    if recommendations:
+        display_text += "### Key Recommendations\n\n"
+        for i, rec in enumerate(recommendations, 1):
+            display_text += f"{i}. {rec}\n"
+    
+    return display_text
+
+# ---------------------
+# Generate HTML Report
 # ---------------------
 def generate_html_report(review_json: dict, file_path: str) -> str:
     """Generate a compact HTML report from the review JSON"""
@@ -260,12 +296,12 @@ def generate_html_report(review_json: dict, file_path: str) -> str:
     
     total_issues = sum(severity_counts.values())
     
-    # Fix time estimates in minutes (based on severity)
+    # Fix time estimates in minutes
     fix_time_map = {
-        "Critical": 45,  # 45 minutes for critical issues
-        "High": 30,      # 30 minutes for high
-        "Medium": 20,    # 20 minutes for medium
-        "Low": 10        # 10 minutes for low
+        "Critical": 45,
+        "High": 30,
+        "Medium": 20,
+        "Low": 10
     }
     
     # Calculate total fix time
@@ -285,13 +321,10 @@ def generate_html_report(review_json: dict, file_path: str) -> str:
         if severity in ["Critical", "High"]:
             severity_class = severity.lower()
             line_num = finding.get("line_number", "?")
-            
-            # Format the issue description (truncate if too long)
             issue = finding.get("finding", "Issue found")
             if len(issue) > 80:
                 issue = issue[:77] + "..."
             
-            # Calculate fix time for this specific issue
             fix_time = fix_time_map.get(severity, 30)
             
             critical_high_rows += f"""
@@ -303,7 +336,7 @@ def generate_html_report(review_json: dict, file_path: str) -> str:
                 </tr>
             """
     
-    # Build Medium/Low rows (Performance & Quality)
+    # Build Medium/Low rows
     perf_rows = ""
     for finding in review_json.get("detailed_findings", []):
         severity = finding.get("severity", "")
@@ -314,7 +347,6 @@ def generate_html_report(review_json: dict, file_path: str) -> str:
             if len(issue) > 80:
                 issue = issue[:77] + "..."
             
-            # Estimate performance impact based on keywords
             impact = "-10% time"
             if any(word in issue.lower() for word in ["loop", "n²", "complexity", "nested"]):
                 impact = "-40% time"
@@ -330,21 +362,19 @@ def generate_html_report(review_json: dict, file_path: str) -> str:
                 </tr>
             """
     
-    # Build action items from recommendations
+    # Build action items
     action_items = ""
     priorities = ["Immediate", "Today", "This Week", "This Sprint", "Next Sprint"]
     for i, rec in enumerate(review_json.get("key_recommendations", [])[:5]):
         priority = priorities[min(i, 4)]
         action_items += f'                    <li><strong>{priority}:</strong> {rec}</li>\n'
     
-    # If no action items, add a default
     if not action_items:
         action_items = '                    <li><strong>Review:</strong> Manual code review recommended</li>\n'
     
-    # Generate the summary text
     summary_text = review_json.get('summary', 'Code analysis complete. Review findings below for details.')
     
-    # Generate the complete HTML
+    # HTML template (same as before, keeping it for the HTML report)
     html_template = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -628,37 +658,51 @@ if __name__ == "__main__":
     try:
         # Read the file
         if not os.path.exists(FILE_TO_REVIEW):
-            print(f"❌ File {FILE_TO_REVIEW} not found")
+            print(f"File {FILE_TO_REVIEW} not found")
             exit(1)
         
         code_text = Path(FILE_TO_REVIEW).read_text()
-        print(f"📄 Reviewing {FILE_TO_REVIEW} ({len(code_text)} characters)")
+        print(f"Reviewing {FILE_TO_REVIEW} ({len(code_text)} characters)")
         
         # Call Cortex
-        print("🤖 Getting review from Snowflake Cortex...")
+        print("Getting review from Snowflake Cortex...")
         report = review_with_cortex(MODEL, code_text)
         
         # Print summary of findings
         findings_count = len(report.get("detailed_findings", []))
-        print(f"✅ Found {findings_count} issues")
+        print(f"Found {findings_count} issues")
         
         # Generate the HTML report
-        print("📝 Generating HTML report...")
+        print("Generating HTML report...")
         html_report = generate_html_report(report, FILE_TO_REVIEW)
         
         # Save HTML report
         with open("code_review_report.html", "w", encoding='utf-8') as f:
             f.write(html_report)
-        print("✅ Generated HTML report: code_review_report.html")
+        print("Generated HTML report: code_review_report.html")
         
-        # Save JSON output
+        # Extract critical findings for inline comments
+        criticals = extract_critical_findings(report)
+        
+        # Format the full review text
+        full_review_text = format_review_for_pr(report)
+        
+        # Create the output JSON in the format expected by inline_comment.py
+        output_data = {
+            "full_review": full_review_text,
+            "full_review_json": report,  # The full JSON response
+            "criticals": criticals,       # Critical issues for inline comments
+            "file": FILE_TO_REVIEW
+        }
+        
+        # Save JSON output compatible with inline_comment.py
         with open("review_output.json", "w") as f:
-            json.dump(report, f, indent=2)
-        print("✅ Saved JSON to review_output.json")
+            json.dump(output_data, f, indent=2)
+        print("Saved JSON to review_output.json")
         
         # Print summary
         print("\n" + "="*50)
-        print("📊 REVIEW SUMMARY:")
+        print("REVIEW SUMMARY:")
         print("="*50)
         
         severity_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
@@ -671,14 +715,16 @@ if __name__ == "__main__":
             if count > 0:
                 print(f"  {sev}: {count} issues")
         
-        print(f"\n🌐 Open 'code_review_report.html' in your browser to see the full report!")
+        print(f"  Critical issues for inline comments: {len(criticals)}")
+        
+        print(f"\nOpen 'code_review_report.html' in your browser to see the full report!")
         print("="*50)
         
         # Close Snowflake session
         session.close()
             
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
         import traceback
         traceback.print_exc()
         if 'session' in locals():
