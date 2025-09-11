@@ -117,16 +117,42 @@ def format_for_pr_display(js: dict) -> str:
 if __name__ == "__main__":
     try:
         if not os.path.exists(FILE_TO_REVIEW):
-            bad(f"File not found: {FILE_TO_REVIEW}"); sys.exit(1)
+            bad(f"File not found: {FILE_TO_REVIEW}")
+            sys.exit(1)
 
         code_text = Path(FILE_TO_REVIEW).read_text(encoding="utf-8")
         report = review_with_cortex(MODEL, code_text)
         filtered = filter_low_severity(report)
+
+        # Extract criticals properly
+        criticals = []
+        if "detailed_findings" in filtered:
+            for f in filtered["detailed_findings"]:
+                if f.get("severity", "").upper() == "CRITICAL":
+                    criticals.append({
+                        "line": f.get("line_number", "N/A"),
+                        "issue": f.get("finding", "Critical issue"),
+                        "severity": "CRITICAL"
+                    })
+
         formatted = format_for_pr_display(filtered)
-        Path("review_output.json").write_text(json.dumps(filtered, indent=2), encoding="utf-8")
+
+        output = {
+            "full_review": formatted,
+            "full_review_json": filtered,
+            "criticals": criticals,   # ✅ always include this
+            "file": FILE_TO_REVIEW,
+            "generated_at_utc": datetime.utcnow().isoformat(timespec="seconds"),
+            "model": MODEL,
+        }
+
+        Path("review_output.json").write_text(json.dumps(output, indent=2), encoding="utf-8")
         Path("review_output.md").write_text(formatted, encoding="utf-8")
+
         print(formatted[:2000])
         good("Review completed and saved.")
     finally:
-        try: session.close()
-        except: pass
+        try:
+            session.close()
+        except Exception:
+            pass
