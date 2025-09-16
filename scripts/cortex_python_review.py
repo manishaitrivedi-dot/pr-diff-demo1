@@ -125,12 +125,6 @@ def format_for_pr_display(json_response: dict) -> str:
 # ---------------------
 def generate_interactive_html_report(json_response: dict, original_findings: list) -> str:
     findings = json_response.get("detailed_findings", [])
-    critical_count = len([f for f in original_findings if f.get("severity", "").upper() == "CRITICAL"])
-    high_count = len([f for f in original_findings if f.get("severity", "").upper() == "HIGH"])
-    medium_count = len([f for f in original_findings if f.get("severity", "").upper() == "MEDIUM"])
-    low_count = len([f for f in original_findings if f.get("severity", "").upper() == "LOW"])
-    total_issues = len(original_findings)
-
     file_findings = {FILE_TO_REVIEW: original_findings}
 
     html_content = f"""
@@ -174,17 +168,11 @@ def generate_interactive_html_report(json_response: dict, original_findings: lis
     count = 0
     for file, issues in file_findings.items():
         count += 1
-        crit = len([i for i in issues if i.get("severity", "").upper()=="CRITICAL"])
-        high = len([i for i in issues if i.get("severity", "").upper()=="HIGH"])
-        if crit: badge_class="priority-critical"; label="Critical Priority"
-        elif high: badge_class="priority-high"; label="High Priority"
-        else: badge_class="priority-medium"; label="Medium Priority"
-
         html_content += f"""
         <div class="file-header" id="header-file{count}" onclick="toggleFile('file{count}')">
             <span class="expand-icon" id="expand-file{count}">▶</span>
             <span>📁 {os.path.basename(file)}</span>
-            <div class="priority-badge {badge_class}">{label} ({len(issues)} issues)</div>
+            <div class="priority-badge priority-medium">Medium Priority ({len(issues)} issues)</div>
         </div>
         <div class="file-details" id="file{count}">
         """
@@ -255,16 +243,18 @@ if __name__ == "__main__":
         html_report = generate_interactive_html_report(filtered, original_findings)
         with open("dbt_code_review_report.html","w") as f: f.write(html_report)
 
-        # JSON output (clean)
+        # JSON output (include both full_review and full_review_markdown)
         output_data = {
-            "full_review_markdown": formatted_review,
+            "full_review": formatted_review,              # for inline_comment.py
+            "full_review_markdown": formatted_review,     # clean version for PR
+            "full_review_json": filtered,                 # keep structured JSON
             "criticals": criticals,
             "file": FILE_TO_REVIEW,
             "interactive_report_path": "dbt_code_review_report.html"
         }
         with open("review_output.json","w") as f: json.dump(output_data, f, indent=2)
 
-        print("✅ Markdown review saved for PR")
+        print("✅ Markdown review saved for PR (full_review + full_review_markdown)")
         print("✅ Interactive HTML report saved to dbt_code_review_report.html")
     finally:
         session.close()
