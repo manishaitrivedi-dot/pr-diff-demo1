@@ -1,7 +1,6 @@
 import os, json, re
 from pathlib import Path
 from snowflake.snowpark import Session
-import pandas as pd
 from datetime import datetime
 
 # ---------------------
@@ -95,24 +94,29 @@ def format_for_pr_display(json_response: dict) -> str:
     findings = json_response.get("detailed_findings", [])
     recommendations = json_response.get("key_recommendations", [])
 
-    display_text = f"### 🤖 Automated LLM Code Review\n\n"
+    display_text = f"## 🤖 Automated LLM Code Review\n\n"
     display_text += f"**File Reviewed:** `{FILE_TO_REVIEW}`\n\n"
     display_text += f"**Summary:** {summary}\n\n"
 
     if findings:
-        display_text += "**Detailed Findings:**\n\n"
+        display_text += "### Detailed Findings\n\n"
         for f in findings:
             severity = f.get("severity", "Unknown")
             line = f.get("line_number", "N/A")
             issue = f.get("finding", "No description")
             context = f.get("function_context", "")
             context_text = f"`{context}`" if context else "N/A"
-            display_text += f"→ **Severity:** {severity}; **Line:** {line}; **Context:** {context_text}; **Finding:** {issue}\n\n"
+
+            # Use GitHub details block for collapsible view
+            display_text += f"<details>\n<summary>⚠️ **{severity}** at line {line}</summary>\n\n"
+            display_text += f"- **Context:** {context_text}\n"
+            display_text += f"- **Finding:** {issue}\n\n"
+            display_text += "</details>\n\n"
     else:
-        display_text += "**No significant issues found.**\n\n"
+        display_text += "✅ **No significant issues found.**\n\n"
 
     if recommendations:
-        display_text += "**Key Recommendations:**\n\n"
+        display_text += "### Key Recommendations\n\n"
         for i, rec in enumerate(recommendations, 1):
             display_text += f"{i}. {rec}\n"
         display_text += "\n"
@@ -121,43 +125,38 @@ def format_for_pr_display(json_response: dict) -> str:
     return display_text
 
 # ---------------------
-# Generate Interactive HTML (expand/collapse)
+# Interactive HTML (colors + expand/collapse)
 # ---------------------
 def generate_interactive_html_report(json_response: dict, original_findings: list) -> str:
     findings = json_response.get("detailed_findings", [])
     file_findings = {FILE_TO_REVIEW: original_findings}
 
-    html_content = f"""
+    html_content = """
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
         <title>Code Review Report</title>
         <style>
-            body {{ font-family: Arial, sans-serif; background: #f8f9fa; color: #343a40; }}
-            .container {{ max-width: 1000px; margin: 20px auto; background: white; border:1px solid #ddd; border-radius:8px; }}
-            .header {{ padding:20px; border-bottom:1px solid #ddd; font-weight:bold; }}
-            .file-header {{ padding:12px 20px; cursor:pointer; display:flex; align-items:center; border-bottom:1px solid #eee; }}
-            .file-header:hover {{ background:#f1f3f5; }}
-            .expand-icon {{ margin-right:8px; }}
-            .file-details {{ display:none; padding:15px 25px; background:#f8f9fa; }}
-            .file-details.expanded {{ display:block; }}
-            .priority-badge {{ margin-left:auto; padding:4px 8px; border-radius:12px; font-size:0.8em; }}
-            .priority-critical {{ background:#f8d7da; color:#721c24; }}
-            .priority-high {{ background:#fff3cd; color:#856404; }}
-            .priority-medium {{ background:#e2e3e5; color:#383d41; }}
-            .priority-dot {{ width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:5px; }}
-            .dot-critical {{ background:#dc3545; }}
-            .dot-high {{ background:#fd7e14; }}
-            .dot-medium {{ background:#ffc107; }}
-            .issue-item {{ border:1px solid #ddd; border-radius:6px; margin-bottom:12px; padding:12px; background:white; }}
-            .issue-title {{ font-weight:bold; margin-bottom:6px; }}
-            .issue-location {{ font-size:0.85em; color:#555; margin-bottom:8px; }}
-            .code-diff {{ border:1px solid #ccc; margin-top:8px; border-radius:6px; }}
-            .diff-header {{ background:#eee; padding:6px 10px; cursor:pointer; font-size:0.85em; }}
-            .diff-body {{ display:none; }}
-            .current-code {{ background:#f8d7da; padding:8px; font-family:monospace; font-size:0.8em; }}
-            .optimized-code {{ background:#d4edda; padding:8px; font-family:monospace; font-size:0.8em; }}
+            body { font-family: Arial, sans-serif; background: #f8f9fa; color: #343a40; }
+            .container { max-width: 1000px; margin: 20px auto; background: white; border:1px solid #ddd; border-radius:8px; }
+            .header { padding:20px; border-bottom:1px solid #ddd; font-weight:bold; }
+            .file-header { padding:12px 20px; cursor:pointer; display:flex; align-items:center; border-bottom:1px solid #eee; }
+            .file-header:hover { background:#f1f3f5; }
+            .expand-icon { margin-right:8px; }
+            .file-details { display:none; padding:15px 25px; background:#f8f9fa; }
+            .file-details.expanded { display:block; }
+            .priority-critical { background:#f8d7da; color:#721c24; padding:2px 6px; border-radius:6px; }
+            .priority-high { background:#fff3cd; color:#856404; padding:2px 6px; border-radius:6px; }
+            .priority-medium { background:#e2e3e5; color:#383d41; padding:2px 6px; border-radius:6px; }
+            .issue-item { border:1px solid #ddd; border-radius:6px; margin-bottom:12px; padding:12px; background:white; }
+            .issue-title { font-weight:bold; margin-bottom:6px; }
+            .issue-location { font-size:0.85em; color:#555; margin-bottom:8px; }
+            .code-diff { border:1px solid #ccc; margin-top:8px; border-radius:6px; }
+            .diff-header { background:#eee; padding:6px 10px; cursor:pointer; font-size:0.85em; }
+            .diff-body { display:none; }
+            .current-code { background:#f8d7da; padding:8px; font-family:monospace; font-size:0.8em; }
+            .optimized-code { background:#d4edda; padding:8px; font-family:monospace; font-size:0.8em; }
         </style>
     </head>
     <body>
@@ -172,7 +171,7 @@ def generate_interactive_html_report(json_response: dict, original_findings: lis
         <div class="file-header" id="header-file{count}" onclick="toggleFile('file{count}')">
             <span class="expand-icon" id="expand-file{count}">▶</span>
             <span>📁 {os.path.basename(file)}</span>
-            <div class="priority-badge priority-medium">Medium Priority ({len(issues)} issues)</div>
+            <span class="priority-medium">{len(issues)} Issues</span>
         </div>
         <div class="file-details" id="file{count}">
         """
@@ -243,18 +242,18 @@ if __name__ == "__main__":
         html_report = generate_interactive_html_report(filtered, original_findings)
         with open("dbt_code_review_report.html","w") as f: f.write(html_report)
 
-        # JSON output (include both full_review and full_review_markdown)
+        # JSON output
         output_data = {
             "full_review": formatted_review,              # for inline_comment.py
-            "full_review_markdown": formatted_review,     # clean version for PR
-            "full_review_json": filtered,                 # keep structured JSON
+            "full_review_markdown": formatted_review,     # clean PR
+            "full_review_json": filtered,                 # structured
             "criticals": criticals,
             "file": FILE_TO_REVIEW,
             "interactive_report_path": "dbt_code_review_report.html"
         }
         with open("review_output.json","w") as f: json.dump(output_data, f, indent=2)
 
-        print("✅ Markdown review saved for PR (full_review + full_review_markdown)")
+        print("✅ Markdown review saved for PR")
         print("✅ Interactive HTML report saved to dbt_code_review_report.html")
     finally:
         session.close()
