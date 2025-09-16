@@ -1,7 +1,6 @@
-import os, json, re
+import os, json
 from pathlib import Path
 from snowflake.snowpark import Session
-from datetime import datetime
 
 # ---------------------
 # Config
@@ -101,14 +100,17 @@ def format_for_pr_display(json_response: dict) -> str:
     if findings:
         display_text += "### Detailed Findings\n\n"
         for f in findings:
-            severity = f.get("severity", "Unknown")
+            severity = f.get("severity", "Unknown").upper()
             line = f.get("line_number", "N/A")
             issue = f.get("finding", "No description")
             context = f.get("function_context", "")
             context_text = f"`{context}`" if context else "N/A"
 
-            # Use GitHub details block for collapsible view
-            display_text += f"<details>\n<summary>⚠️ **{severity}** at line {line}</summary>\n\n"
+            # Emoji map
+            sev_icon = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(severity, "⚪")
+
+            # Collapsible block
+            display_text += f"<details>\n<summary>{sev_icon} **{severity}** at line {line}</summary>\n\n"
             display_text += f"- **Context:** {context_text}\n"
             display_text += f"- **Finding:** {issue}\n\n"
             display_text += "</details>\n\n"
