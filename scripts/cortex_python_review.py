@@ -1,4 +1,4 @@
-import os, json
+import os, json, re
 from pathlib import Path
 from snowflake.snowpark import Session
 
@@ -36,7 +36,7 @@ def build_prompt(code_text: str) -> str:
     return PROMPT_TEMPLATE.replace("{PY_CONTENT}", code_text).replace("{FILE_PATH}", FILE_TO_REVIEW)
 
 # ---------------------
-# Cortex call
+# Cortex call with safe parsing
 # ---------------------
 def review_with_cortex(model: str, code_text: str) -> dict:
     prompt = build_prompt(code_text)
@@ -52,10 +52,29 @@ def review_with_cortex(model: str, code_text: str) -> dict:
         df = session.sql(query)
         result = df.collect()[0][0]
 
+        # Try strict JSON first
         try:
             return json.loads(result)
         except Exception:
-            return {"summary": "Analysis text", "detailed_findings": [], "raw_text": result}
+            print("⚠️ Response not valid JSON, trying text extraction...")
+
+            # Extract summary
+            summary_match = re.search(r"Summary:\s*(.*)", result, re.IGNORECASE)
+            summary = summary_match.group(1).strip() if summary_match else "No significant issues found"
+
+            # Extract key recommendations
+            rec_match = re.search(r"Key Recommendations:([\s\S]*)", result, re.IGNORECASE)
+            recommendations = []
+            if rec_match:
+                recommendations = [line.strip(" -0123456789.") 
+                                   for line in rec_match.group(1).splitlines() if line.strip()]
+
+            return {
+                "summary": summary,
+                "detailed_findings": [],   # fallback empty
+                "key_recommendations": recommendations,
+                "raw_text": result
+            }
     except Exception as e:
         return {"summary": f"Error: {e}", "detailed_findings": []}
 
@@ -89,7 +108,13 @@ def extract_critical_findings(json_response: dict) -> list:
 # Markdown formatter (for PR comment)
 # ---------------------
 def format_for_pr_display(json_response: dict) -> str:
-    summary = json_response.get("summary", "Code review completed")
+    summary = json_response.get("summary", "").strip()
+    if not summary or summary.lower() in ["analysis text", ""]:
+        if json_response.get("detailed_findings"):
+            summary = "Issues were detected during code review."
+        else:
+            summary = "No significant issues found in the file."
+
     findings = json_response.get("detailed_findings", [])
     recommendations = json_response.get("key_recommendations", [])
 
@@ -106,8 +131,13 @@ def format_for_pr_display(json_response: dict) -> str:
             context = f.get("function_context", "")
             context_text = f"`{context}`" if context else "N/A"
 
-            # Emoji map
-            sev_icon = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(severity, "⚪")
+            # Emoji severity
+            sev_icon = {
+                "CRITICAL": "🔴",
+                "HIGH": "🟠",
+                "MEDIUM": "🟡",
+                "LOW": "🟢"
+            }.get(severity, "⚪")
 
             # Collapsible block
             display_text += f"<details>\n<summary>{sev_icon} **{severity}** at line {line}</summary>\n\n"
