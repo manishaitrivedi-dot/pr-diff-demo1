@@ -27,7 +27,7 @@ session = Session.builder.configs(cfg).create()
 # Prompt template
 # ---------------------
 PROMPT_TEMPLATE = """Please act as a principal-level Python code reviewer.
-# CODE DIFF TO REVIEW
+# CODE TO REVIEW
 {PY_CONTENT}
 """
 
@@ -56,13 +56,13 @@ def review_with_cortex(model: str, code_text: str) -> dict:
         try:
             return json.loads(result)
         except Exception:
-            print("⚠️ Response not valid JSON, trying text extraction...")
+            print("⚠️ Response not valid JSON, using text fallback...")
 
             # Extract summary
             summary_match = re.search(r"Summary:\s*(.*)", result, re.IGNORECASE)
             summary = summary_match.group(1).strip() if summary_match else "No significant issues found"
 
-            # Extract key recommendations
+            # Extract recommendations
             rec_match = re.search(r"Key Recommendations:([\s\S]*)", result, re.IGNORECASE)
             recommendations = []
             if rec_match:
@@ -105,18 +105,19 @@ def extract_critical_findings(json_response: dict) -> list:
     return findings
 
 # ---------------------
-# Markdown formatter (for PR comment)
+# Markdown formatter (GitHub PR)
 # ---------------------
 def format_for_pr_display(json_response: dict) -> str:
-    summary = json_response.get("summary", "").strip()
-    if not summary or summary.lower() in ["analysis text", ""]:
-        if json_response.get("detailed_findings"):
-            summary = "Issues were detected during code review."
-        else:
-            summary = "No significant issues found in the file."
-
     findings = json_response.get("detailed_findings", [])
     recommendations = json_response.get("key_recommendations", [])
+
+    # Handle summary fallback
+    summary = json_response.get("summary", "").strip()
+    if not summary or summary.lower() in ["analysis text", "no significant issues found", ""]:
+        if findings:
+            summary = "Issues were detected during the review."
+        else:
+            summary = "This file passed automated review — no major problems detected."
 
     display_text = f"## 🤖 Automated LLM Code Review\n\n"
     display_text += f"**File Reviewed:** `{FILE_TO_REVIEW}`\n\n"
@@ -131,7 +132,6 @@ def format_for_pr_display(json_response: dict) -> str:
             context = f.get("function_context", "")
             context_text = f"`{context}`" if context else "N/A"
 
-            # Emoji severity
             sev_icon = {
                 "CRITICAL": "🔴",
                 "HIGH": "🟠",
@@ -139,13 +139,12 @@ def format_for_pr_display(json_response: dict) -> str:
                 "LOW": "🟢"
             }.get(severity, "⚪")
 
-            # Collapsible block
             display_text += f"<details>\n<summary>{sev_icon} **{severity}** at line {line}</summary>\n\n"
             display_text += f"- **Context:** {context_text}\n"
             display_text += f"- **Finding:** {issue}\n\n"
             display_text += "</details>\n\n"
     else:
-        display_text += "✅ **No significant issues found.**\n\n"
+        display_text += "✅ **No significant issues were detected in this file.**\n\n"
 
     if recommendations:
         display_text += "### Key Recommendations\n\n"
@@ -157,7 +156,7 @@ def format_for_pr_display(json_response: dict) -> str:
     return display_text
 
 # ---------------------
-# Interactive HTML (colors + expand/collapse)
+# Interactive HTML
 # ---------------------
 def generate_interactive_html_report(json_response: dict, original_findings: list) -> str:
     findings = json_response.get("detailed_findings", [])
@@ -184,11 +183,6 @@ def generate_interactive_html_report(json_response: dict, original_findings: lis
             .issue-item { border:1px solid #ddd; border-radius:6px; margin-bottom:12px; padding:12px; background:white; }
             .issue-title { font-weight:bold; margin-bottom:6px; }
             .issue-location { font-size:0.85em; color:#555; margin-bottom:8px; }
-            .code-diff { border:1px solid #ccc; margin-top:8px; border-radius:6px; }
-            .diff-header { background:#eee; padding:6px 10px; cursor:pointer; font-size:0.85em; }
-            .diff-body { display:none; }
-            .current-code { background:#f8d7da; padding:8px; font-family:monospace; font-size:0.8em; }
-            .optimized-code { background:#d4edda; padding:8px; font-family:monospace; font-size:0.8em; }
         </style>
     </head>
     <body>
@@ -216,13 +210,6 @@ def generate_interactive_html_report(json_response: dict, original_findings: lis
             <div class="issue-item">
                 <div class="issue-title">[{sev}] {finding[:80]}</div>
                 <div class="issue-location">Line {line}</div>
-                <div class="code-diff">
-                    <div class="diff-header" onclick="toggleDiff('diff-{count}-{idx}')">▶ View Code</div>
-                    <div class="diff-body" id="diff-{count}-{idx}">
-                        <div class="current-code"># Current code snippet...</div>
-                        <div class="optimized-code"># Suggested fix...</div>
-                    </div>
-                </div>
             </div>
             """
 
@@ -241,11 +228,6 @@ def generate_interactive_html_report(json_response: dict, original_findings: lis
                 details.classList.add('expanded');
                 icon.textContent='▼';
             }
-        }
-        function toggleDiff(diffId) {
-            const d=document.getElementById(diffId);
-            if(d.style.display==='block') d.style.display='none';
-            else d.style.display='block';
         }
         document.addEventListener('DOMContentLoaded',()=>toggleFile('file1'));
     </script>
@@ -277,8 +259,8 @@ if __name__ == "__main__":
         # JSON output
         output_data = {
             "full_review": formatted_review,              # for inline_comment.py
-            "full_review_markdown": formatted_review,     # clean PR
-            "full_review_json": filtered,                 # structured
+            "full_review_markdown": formatted_review,
+            "full_review_json": filtered,
             "criticals": criticals,
             "file": FILE_TO_REVIEW,
             "interactive_report_path": "dbt_code_review_report.html"
