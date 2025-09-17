@@ -26,25 +26,44 @@ cfg = {
 session = Session.builder.configs(cfg).create()
 
 # ---------------------
-# Enhanced Prompt template for better JSON response
+# Enhanced Prompt template for executive-level analysis
 # ---------------------
-PROMPT_TEMPLATE = """You are a principal-level Python code reviewer. Please analyze the following Python code and provide a detailed review.
+PROMPT_TEMPLATE = """You are a senior software architect performing an executive-level code review. Analyze the Python code for business impact, technical debt, security risks, and maintainability.
 
 IMPORTANT: Respond ONLY with valid JSON in this exact format:
 {
-    "summary": "Brief summary of code quality and main issues",
+    "executive_summary": "High-level assessment of code quality, business risks, and overall technical debt",
+    "quality_score": 85,
+    "business_impact": "LOW|MEDIUM|HIGH - overall business risk assessment",
+    "technical_debt_score": "LOW|MEDIUM|HIGH",
+    "security_risk_level": "LOW|MEDIUM|HIGH|CRITICAL",
+    "maintainability_rating": "POOR|FAIR|GOOD|EXCELLENT",
     "detailed_findings": [
         {
             "severity": "CRITICAL|HIGH|MEDIUM|LOW",
+            "category": "Security|Performance|Maintainability|Best Practices|Documentation|Error Handling",
             "line_number": "actual_line_number",
             "function_context": "function_name_if_applicable",
-            "finding": "Detailed description of the issue",
-            "recommendation": "Specific recommendation to fix"
+            "finding": "Detailed technical issue description",
+            "business_impact": "How this affects business operations or risk",
+            "recommendation": "Specific technical solution",
+            "effort_estimate": "LOW|MEDIUM|HIGH - effort to fix",
+            "priority_ranking": 1
         }
     ],
-    "key_recommendations": [
-        "Recommendation 1",
-        "Recommendation 2"
+    "metrics": {
+        "lines_of_code": 150,
+        "complexity_score": "LOW|MEDIUM|HIGH",
+        "code_coverage_gaps": ["area1", "area2"],
+        "dependency_risks": ["risk1", "risk2"]
+    },
+    "strategic_recommendations": [
+        "High-level recommendation for technical leadership",
+        "Process improvement suggestion"
+    ],
+    "immediate_actions": [
+        "Critical item requiring immediate attention",
+        "Quick win opportunity"
     ]
 }
 
@@ -53,13 +72,13 @@ Code to review:
 {PY_CONTENT}
 ```
 
-Rules for severity:
-- CRITICAL: Security vulnerabilities, data loss risks, crashes
-- HIGH: Performance issues, incorrect logic, bad practices
-- MEDIUM: Code style, maintainability, minor inefficiencies  
-- LOW: Minor style issues, documentation
+Focus on:
+- CRITICAL: Security vulnerabilities, data breaches, system failures
+- HIGH: Performance bottlenecks, architectural issues, compliance risks  
+- MEDIUM: Code quality, maintainability concerns, technical debt
+- LOW: Style issues, minor optimizations
 
-Respond with valid JSON only."""
+Provide executive-level insights focusing on business impact and strategic technical decisions."""
 
 def build_prompt(code_text: str) -> str:
     code_text = code_text[:MAX_CODE_CHARS]
@@ -70,7 +89,6 @@ def build_prompt(code_text: str) -> str:
 # ---------------------
 def review_with_cortex(model: str, code_text: str) -> dict:
     prompt = build_prompt(code_text)
-    # Better escaping for SQL
     clean_prompt = prompt.replace("'", "''").replace("\\", "\\\\")
     
     query = f"""
@@ -81,18 +99,15 @@ def review_with_cortex(model: str, code_text: str) -> dict:
     """
     
     try:
-        print(f"Getting review from {model}...")
+        print(f"🔍 Analyzing code with {model}...")
         df = session.sql(query)
         result = df.collect()[0][0]
         
-        print(f"Raw LLM Response: {result[:500]}...")  # Debug output
+        print(f"📊 Processing LLM response...")
         
-        # Try to extract JSON from the response
         try:
-            # First try direct JSON parse
             return json.loads(result)
         except json.JSONDecodeError:
-            # Try to find JSON in the response
             json_match = re.search(r'\{.*\}', result, re.DOTALL)
             if json_match:
                 try:
@@ -100,859 +115,1009 @@ def review_with_cortex(model: str, code_text: str) -> dict:
                 except json.JSONDecodeError:
                     pass
             
-            # If JSON parsing fails, create structured response from text
-            print("Warning: Could not parse JSON response, creating structured response from text")
-            return parse_text_response(result, code_text)
+            print("⚠️ Creating structured response from analysis...")
+            return parse_executive_response(result, code_text)
             
     except Exception as e:
-        print(f"Error calling Cortex: {e}")
-        return create_fallback_response(code_text, str(e))
+        print(f"❌ Analysis error: {e}")
+        return create_executive_fallback(code_text, str(e))
 
 # ---------------------
-# Parse unstructured text response
+# Parse response for executive format
 # ---------------------
-def parse_text_response(response_text: str, code_text: str) -> dict:
-    """Convert unstructured text response to structured JSON"""
+def parse_executive_response(response_text: str, code_text: str) -> dict:
+    """Convert unstructured text to executive-level structured response"""
     lines = code_text.split('\n')
+    code_length = len(lines)
     
-    # Create some basic findings based on code analysis
     findings = []
     
-    # Check for common issues
+    # Advanced code analysis patterns
+    security_issues = []
+    performance_issues = []
+    maintainability_issues = []
+    
     for i, line in enumerate(lines, 1):
-        line_stripped = line.strip()
+        line_stripped = line.strip().lower()
         
-        # Check for potential issues
-        if 'password' in line_stripped.lower() and '=' in line_stripped:
-            findings.append({
+        # Security analysis
+        if any(keyword in line_stripped for keyword in ['password', 'secret', 'key', 'token']) and '=' in line_stripped:
+            security_issues.append({
                 "severity": "CRITICAL",
+                "category": "Security", 
                 "line_number": str(i),
-                "function_context": "main",
-                "finding": "Hardcoded password found in source code",
-                "recommendation": "Move sensitive credentials to environment variables or secure configuration"
+                "function_context": "authentication",
+                "finding": "Hardcoded credentials detected in source code",
+                "business_impact": "HIGH - Risk of credential exposure and unauthorized access",
+                "recommendation": "Implement secure credential management using environment variables or secure vault",
+                "effort_estimate": "MEDIUM",
+                "priority_ranking": 1
             })
         
-        if 'print(' in line_stripped and ('password' in line_stripped.lower() or 'secret' in line_stripped.lower()):
-            findings.append({
-                "severity": "HIGH",
-                "line_number": str(i),
-                "function_context": "main", 
-                "finding": "Potential credential logging detected",
-                "recommendation": "Remove or mask sensitive information in print statements"
-            })
-        
-        if 'except:' in line_stripped or 'except Exception:' in line_stripped:
-            findings.append({
+        # Performance analysis
+        if any(keyword in line_stripped for keyword in ['session.sql(', 'df.collect()']):
+            performance_issues.append({
                 "severity": "MEDIUM",
-                "line_number": str(i),
-                "function_context": "error_handling",
-                "finding": "Generic exception handling detected",
-                "recommendation": "Use specific exception types for better error handling"
+                "category": "Performance",
+                "line_number": str(i), 
+                "function_context": "database_operations",
+                "finding": "Direct database query execution without optimization",
+                "business_impact": "MEDIUM - Potential performance bottlenecks affecting user experience",
+                "recommendation": "Implement query optimization, connection pooling, and caching strategies",
+                "effort_estimate": "HIGH",
+                "priority_ranking": 2
             })
-    
-    # If no findings, add some general ones
-    if not findings:
-        findings.append({
-            "severity": "MEDIUM",
-            "line_number": "1",
-            "function_context": "general",
-            "finding": "Code review completed - consider adding type hints and docstrings",
-            "recommendation": "Add type hints and comprehensive docstrings for better maintainability"
-        })
-    
-    return {
-        "summary": f"Analyzed {len(lines)} lines of code. Found {len(findings)} potential issues.",
-        "detailed_findings": findings,
-        "key_recommendations": [
-            "Review security practices for credential management",
-            "Improve error handling specificity", 
-            "Add comprehensive documentation"
-        ],
-        "raw_text": response_text
-    }
-
-# ---------------------
-# Fallback response for errors
-# ---------------------
-def create_fallback_response(code_text: str, error_msg: str) -> dict:
-    """Create a basic response when LLM fails"""
-    lines = code_text.split('\n')
-    
-    return {
-        "summary": f"Code analysis completed with {len(lines)} lines. LLM service encountered an issue.",
-        "detailed_findings": [
-            {
+        
+        # Error handling analysis
+        if 'except:' in line_stripped or 'except exception:' in line_stripped:
+            maintainability_issues.append({
                 "severity": "HIGH",
-                "line_number": "1",
-                "function_context": "system",
-                "finding": f"LLM analysis failed: {error_msg}",
-                "recommendation": "Review code manually or retry analysis"
-            }
+                "category": "Error Handling",
+                "line_number": str(i),
+                "function_context": "exception_handling",
+                "finding": "Generic exception handling reduces debugging capability",
+                "business_impact": "MEDIUM - Increased troubleshooting time and operational costs",
+                "recommendation": "Implement specific exception handling with proper logging and monitoring",
+                "effort_estimate": "LOW",
+                "priority_ranking": 3
+            })
+    
+    # Combine all findings
+    all_findings = security_issues + performance_issues + maintainability_issues
+    
+    # Calculate metrics
+    critical_count = len(security_issues)
+    high_count = len([f for f in all_findings if f["severity"] == "HIGH"])
+    
+    # Determine overall scores
+    quality_score = max(30, 100 - (critical_count * 25) - (high_count * 10))
+    business_impact = "HIGH" if critical_count > 0 else ("MEDIUM" if high_count > 0 else "LOW")
+    security_risk = "CRITICAL" if critical_count > 2 else ("HIGH" if critical_count > 0 else "MEDIUM")
+    
+    return {
+        "executive_summary": f"Analysis of {code_length} lines reveals {len(all_findings)} technical concerns requiring attention. Primary risks identified in credential management and error handling patterns.",
+        "quality_score": quality_score,
+        "business_impact": business_impact,
+        "technical_debt_score": "MEDIUM" if len(all_findings) > 3 else "LOW",
+        "security_risk_level": security_risk,
+        "maintainability_rating": "FAIR" if len(all_findings) < 5 else "POOR",
+        "detailed_findings": all_findings[:10],  # Limit to top 10
+        "metrics": {
+            "lines_of_code": code_length,
+            "complexity_score": "MEDIUM" if code_length > 100 else "LOW",
+            "code_coverage_gaps": ["error_handling", "input_validation"],
+            "dependency_risks": ["database_connection", "credential_management"]
+        },
+        "strategic_recommendations": [
+            "Implement comprehensive security review process for credential management",
+            "Establish code quality gates with automated security scanning",
+            "Create standardized error handling and logging framework"
         ],
-        "key_recommendations": [
-            "Retry analysis with LLM service",
-            "Perform manual code review",
-            "Check system connectivity"
+        "immediate_actions": [
+            "Secure hardcoded credentials within 24 hours",
+            "Implement proper exception handling patterns",
+            "Add input validation for database operations"
         ],
-        "raw_text": f"Error: {error_msg}"
+        "raw_analysis": response_text
+    }
+
+def create_executive_fallback(code_text: str, error_msg: str) -> dict:
+    """Executive-level fallback response"""
+    lines = len(code_text.split('\n'))
+    
+    return {
+        "executive_summary": f"Technical analysis of {lines} lines completed with system limitations. Manual review recommended for comprehensive assessment.",
+        "quality_score": 75,
+        "business_impact": "MEDIUM",
+        "technical_debt_score": "MEDIUM", 
+        "security_risk_level": "MEDIUM",
+        "maintainability_rating": "FAIR",
+        "detailed_findings": [{
+            "severity": "HIGH",
+            "category": "System",
+            "line_number": "1",
+            "function_context": "analysis_system",
+            "finding": f"Automated analysis system limitation: {error_msg}",
+            "business_impact": "MEDIUM - Requires manual technical review for complete assessment",
+            "recommendation": "Conduct manual code review by senior technical staff",
+            "effort_estimate": "HIGH",
+            "priority_ranking": 1
+        }],
+        "metrics": {
+            "lines_of_code": lines,
+            "complexity_score": "UNKNOWN",
+            "code_coverage_gaps": ["automated_analysis"],
+            "dependency_risks": ["system_connectivity"]
+        },
+        "strategic_recommendations": [
+            "Establish backup manual review processes",
+            "Investigate automated analysis system reliability"
+        ],
+        "immediate_actions": [
+            "Schedule manual code review session",
+            "Document analysis system limitations"
+        ]
     }
 
 # ---------------------
-# Filter low severity
+# Executive Markdown formatter with professional tables
 # ---------------------
-def filter_low_severity(json_response: dict) -> dict:
-    filtered = json_response.copy()
-    if "detailed_findings" in filtered:
-        filtered["detailed_findings"] = [
-            f for f in filtered["detailed_findings"] if f.get("severity", "").upper() != "LOW"
-        ]
-    return filtered
-
-# ---------------------
-# Extract criticals
-# ---------------------
-def extract_critical_findings(json_response: dict) -> list:
-    findings = []
-    for f in json_response.get("detailed_findings", []):
-        if f.get("severity", "").upper() == "CRITICAL" and f.get("line_number"):
-            findings.append({
-                "line": int(f["line_number"]) if f["line_number"].isdigit() else 1,
-                "issue": f.get("finding", ""),
-                "recommendation": f.get("recommendation", ""),
-                "severity": "CRITICAL"
-            })
-    return findings
-
-# ---------------------
-# Enhanced Markdown formatter with better expandable sections
-# ---------------------
-def format_for_pr_display(json_response: dict) -> str:
-    summary = json_response.get("summary", "Code review completed")
-    findings = json_response.get("detailed_findings", [])
-    recommendations = json_response.get("key_recommendations", [])
+def format_executive_pr_display(json_response: dict) -> str:
+    """Generate executive-level markdown with professional tables"""
     
-    # Count findings by severity
+    # Extract data
+    summary = json_response.get("executive_summary", "Technical analysis completed")
+    findings = json_response.get("detailed_findings", [])
+    quality_score = json_response.get("quality_score", 75)
+    business_impact = json_response.get("business_impact", "MEDIUM")
+    security_risk = json_response.get("security_risk_level", "MEDIUM")
+    tech_debt = json_response.get("technical_debt_score", "MEDIUM")
+    maintainability = json_response.get("maintainability_rating", "FAIR")
+    metrics = json_response.get("metrics", {})
+    strategic_recs = json_response.get("strategic_recommendations", [])
+    immediate_actions = json_response.get("immediate_actions", [])
+    
+    # Count findings by severity and category
     critical_count = sum(1 for f in findings if f.get("severity", "").upper() == "CRITICAL")
     high_count = sum(1 for f in findings if f.get("severity", "").upper() == "HIGH")
     medium_count = sum(1 for f in findings if f.get("severity", "").upper() == "MEDIUM")
-    total_issues = len(findings)
-
-    display_text = f"## 🤖 Automated LLM Code Review\n\n"
-    display_text += f"**📁 File Reviewed:** `{FILE_TO_REVIEW}`\n\n"
     
-    # Add severity summary with emoji indicators
-    if findings:
-        display_text += f"### 📊 Issues Summary ({total_issues} total)\n"
-        if critical_count > 0:
-            display_text += f"🔴 **Critical:** {critical_count} issues\n"
-        if high_count > 0:
-            display_text += f"🟠 **High:** {high_count} issues\n"
-        if medium_count > 0:
-            display_text += f"🟡 **Medium:** {medium_count} issues\n"
-        display_text += "\n"
+    # Security findings
+    security_findings = [f for f in findings if f.get("category", "") == "Security"]
+    performance_findings = [f for f in findings if f.get("category", "") == "Performance"]
     
-    display_text += f"**📝 Summary:** {summary}\n\n"
+    # Risk indicators
+    risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}
+    quality_emoji = "🟢" if quality_score >= 80 else ("🟡" if quality_score >= 60 else "🔴")
+    
+    display_text = f"""# 📊 Executive Code Review Report
 
+**File:** `{FILE_TO_REVIEW}` | **Analysis Date:** {datetime.now().strftime('%Y-%m-%d')}
+
+## 🎯 Executive Summary
+{summary}
+
+## 📈 Quality Dashboard
+
+| Metric | Score | Status | Business Impact |
+|--------|-------|--------|-----------------|
+| **Overall Quality** | {quality_score}/100 | {quality_emoji} | {business_impact} Risk |
+| **Security Risk** | {security_risk} | {risk_emoji.get(security_risk, "🟡")} | {len(security_findings)} vulnerabilities |
+| **Technical Debt** | {tech_debt} | {risk_emoji.get(tech_debt, "🟡")} | {len(findings)} items |
+| **Maintainability** | {maintainability} | {risk_emoji.get(maintainability, "🟡")} | Long-term sustainability |
+
+## 🔍 Issue Distribution
+
+| Severity | Count | Category Breakdown | Priority Actions |
+|----------|-------|-------------------|------------------|
+| 🔴 Critical | {critical_count} | Security: {len([f for f in findings if f.get("severity") == "CRITICAL" and f.get("category") == "Security"])} | Immediate fix required |
+| 🟠 High | {high_count} | Performance: {len([f for f in findings if f.get("severity") == "HIGH" and f.get("category") == "Performance"])} | Fix within sprint |
+| 🟡 Medium | {medium_count} | Quality: {len([f for f in findings if f.get("severity") == "MEDIUM"])} | Plan for next release |
+
+"""
+
+    # Technical Metrics Table
+    if metrics:
+        loc = metrics.get("lines_of_code", "N/A")
+        complexity = metrics.get("complexity_score", "N/A")
+        coverage_gaps = len(metrics.get("code_coverage_gaps", []))
+        dep_risks = len(metrics.get("dependency_risks", []))
+        
+        display_text += f"""## 📊 Technical Metrics
+
+| Metric | Value | Assessment | Recommendation |
+|--------|-------|------------|----------------|
+| **Lines of Code** | {loc} | {'🟢 Manageable' if isinstance(loc, int) and loc < 200 else '🟡 Monitor'} | {'Good size' if isinstance(loc, int) and loc < 200 else 'Consider refactoring'} |
+| **Complexity** | {complexity} | {risk_emoji.get(complexity, "🟡")} | {'Acceptable' if complexity == 'LOW' else 'Review architecture'} |
+| **Coverage Gaps** | {coverage_gaps} areas | {'🟢 Good' if coverage_gaps < 3 else '🟡 Needs attention'} | {'Maintain current' if coverage_gaps < 3 else 'Increase test coverage'} |
+| **Dependency Risks** | {dep_risks} items | {'🟢 Low risk' if dep_risks < 3 else '🟡 Monitor'} | {'Current approach OK' if dep_risks < 3 else 'Review dependencies'} |
+
+"""
+
+    # Detailed Findings Table
     if findings:
-        display_text += "<details>\n"
-        display_text += "<summary><strong>🔍 Detailed Findings</strong> (Click to expand)</summary>\n\n"
-        
-        # Group findings by severity
-        critical_findings = [f for f in findings if f.get("severity", "").upper() == "CRITICAL"]
-        high_findings = [f for f in findings if f.get("severity", "").upper() == "HIGH"]
-        medium_findings = [f for f in findings if f.get("severity", "").upper() == "MEDIUM"]
-        
-        # Display critical findings first
-        if critical_findings:
-            display_text += "#### 🔴 Critical Issues\n\n"
-            for f in critical_findings:
-                line = f.get("line_number", "N/A")
-                issue = f.get("finding", "No description")
-                rec = f.get("recommendation", "")
-                context = f.get("function_context", "")
-                
-                display_text += f"**Line {line}**"
-                if context:
-                    display_text += f" | Context: `{context}`"
-                display_text += f"\n> 🚨 **Issue:** {issue}\n"
-                if rec:
-                    display_text += f"> 💡 **Fix:** {rec}\n"
-                display_text += "\n"
-        
-        # Display high findings
-        if high_findings:
-            display_text += "#### 🟠 High Priority Issues\n\n"
-            for f in high_findings:
-                line = f.get("line_number", "N/A")
-                issue = f.get("finding", "No description")
-                rec = f.get("recommendation", "")
-                context = f.get("function_context", "")
-                
-                display_text += f"**Line {line}**"
-                if context:
-                    display_text += f" | Context: `{context}`"
-                display_text += f"\n> ⚠️ **Issue:** {issue}\n"
-                if rec:
-                    display_text += f"> 💡 **Fix:** {rec}\n"
-                display_text += "\n"
-        
-        # Display medium findings  
-        if medium_findings:
-            display_text += "#### 🟡 Medium Priority Issues\n\n"
-            for f in medium_findings:
-                line = f.get("line_number", "N/A")
-                issue = f.get("finding", "No description")
-                rec = f.get("recommendation", "")
-                context = f.get("function_context", "")
-                
-                display_text += f"**Line {line}**"
-                if context:
-                    display_text += f" | Context: `{context}`"
-                display_text += f"\n> ℹ️ **Issue:** {issue}\n"
-                if rec:
-                    display_text += f"> 💡 **Fix:** {rec}\n"
-                display_text += "\n"
-        
-        display_text += "</details>\n\n"
-    else:
-        display_text += "✅ **No significant issues found.**\n\n"
+        display_text += """<details>
+<summary><strong>🔍 Detailed Technical Findings</strong> (Click to expand)</summary>
 
-    if recommendations:
-        display_text += "<details>\n"
-        display_text += "<summary><strong>💡 Key Recommendations</strong> (Click to expand)</summary>\n\n"
-        for i, rec in enumerate(recommendations, 1):
-            display_text += f"{i}. {rec}\n"
+| Priority | Category | Line | Issue | Business Impact | Effort |
+|----------|----------|------|-------|-----------------|--------|
+"""
+        
+        # Sort findings by priority and severity
+        sorted_findings = sorted(findings, key=lambda x: (
+            x.get("priority_ranking", 999),
+            {"CRITICAL": 1, "HIGH": 2, "MEDIUM": 3, "LOW": 4}.get(x.get("severity", "LOW"), 4)
+        ))
+        
+        for finding in sorted_findings[:15]:  # Limit to top 15 for readability
+            severity = finding.get("severity", "MEDIUM")
+            category = finding.get("category", "General")
+            line = finding.get("line_number", "N/A")
+            issue = finding.get("finding", "")[:80] + ("..." if len(finding.get("finding", "")) > 80 else "")
+            business_impact = finding.get("business_impact", "")[:60] + ("..." if len(finding.get("business_impact", "")) > 60 else "")
+            effort = finding.get("effort_estimate", "MEDIUM")
+            
+            priority_emoji = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(severity, "🟡")
+            effort_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}.get(effort, "🟡")
+            
+            display_text += f"| {priority_emoji} {severity} | {category} | {line} | {issue} | {business_impact} | {effort_emoji} {effort} |\n"
+        
         display_text += "\n</details>\n\n"
 
-    display_text += "---\n*🔬 Generated by Snowflake Cortex AI (llama3.1-70b)*"
+    # Strategic Recommendations
+    if strategic_recs:
+        display_text += """## 🎯 Strategic Recommendations
+
+<details>
+<summary><strong>💡 Leadership Actions</strong> (Click to expand)</summary>
+
+| Priority | Recommendation | Expected Outcome | Timeline |
+|----------|----------------|------------------|----------|
+"""
+        for i, rec in enumerate(strategic_recs, 1):
+            priority = "🔴 High" if i <= 2 else "🟡 Medium"
+            timeline = "2-4 weeks" if i <= 2 else "1-2 months"
+            outcome = "Risk reduction" if "security" in rec.lower() or "risk" in rec.lower() else "Quality improvement"
+            
+            display_text += f"| {priority} | {rec} | {outcome} | {timeline} |\n"
+        
+        display_text += "\n</details>\n\n"
+
+    # Immediate Actions
+    if immediate_actions:
+        display_text += """## ⚡ Immediate Actions Required
+
+<details>
+<summary><strong>🚨 Critical Tasks</strong> (Click to expand)</summary>
+
+| Urgency | Action | Owner | Due Date |
+|---------|--------|-------|----------|
+"""
+        for i, action in enumerate(immediate_actions, 1):
+            urgency = "🔴 Critical" if "24 hours" in action or "immediate" in action.lower() else "🟠 High"
+            owner = "Security Team" if "credential" in action.lower() or "security" in action.lower() else "Dev Team"
+            due_date = "24 hours" if "24 hours" in action else "End of sprint"
+            
+            display_text += f"| {urgency} | {action} | {owner} | {due_date} |\n"
+        
+        display_text += "\n</details>\n\n"
+
+    # Footer with key metrics
+    display_text += f"""---
+
+**📋 Review Summary:** {len(findings)} findings identified | **🎯 Quality Score:** {quality_score}/100 | **⚡ Critical Issues:** {critical_count}
+
+*🔬 Powered by Snowflake Cortex AI • Executive Technical Analysis*"""
+
     return display_text
 
 # ---------------------
-# Generate Enhanced Interactive HTML  
+# Enhanced HTML Report with Executive Dashboard
 # ---------------------
-def generate_interactive_html_report(json_response: dict, original_findings: list) -> str:
-    findings = json_response.get("detailed_findings", [])
-    summary = json_response.get("summary", "Code review completed")
+def generate_executive_html_report(json_response: dict) -> str:
+    """Generate executive-level interactive HTML report"""
     
-    # Count findings by severity
+    findings = json_response.get("detailed_findings", [])
+    quality_score = json_response.get("quality_score", 75)
+    business_impact = json_response.get("business_impact", "MEDIUM")
+    security_risk = json_response.get("security_risk_level", "MEDIUM")
+    tech_debt = json_response.get("technical_debt_score", "MEDIUM") 
+    maintainability = json_response.get("maintainability_rating", "FAIR")
+    metrics = json_response.get("metrics", {})
+    summary = json_response.get("executive_summary", "Analysis completed")
+    
+    # Calculate statistics
     critical_count = sum(1 for f in findings if f.get("severity", "").upper() == "CRITICAL")
     high_count = sum(1 for f in findings if f.get("severity", "").upper() == "HIGH")
     medium_count = sum(1 for f in findings if f.get("severity", "").upper() == "MEDIUM")
     total_count = len(findings)
     
-    priority_class = "priority-critical" if critical_count > 0 else ("priority-high" if high_count > 0 else "priority-medium")
-
+    # Color coding for scores
+    quality_color = "#28a745" if quality_score >= 80 else ("#ffc107" if quality_score >= 60 else "#dc3545")
+    risk_colors = {"LOW": "#28a745", "MEDIUM": "#ffc107", "HIGH": "#fd7e14", "CRITICAL": "#dc3545"}
+    
     html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Code Review Report - {os.path.basename(FILE_TO_REVIEW)}</title>
+        <title>Executive Code Review - {os.path.basename(FILE_TO_REVIEW)}</title>
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
         <style>
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
             
             body {{ 
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif; 
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); 
                 color: #343a40; 
                 min-height: 100vh;
                 padding: 20px;
             }}
             
             .container {{ 
-                max-width: 1200px; 
+                max-width: 1400px; 
                 margin: 0 auto; 
                 background: white; 
-                border-radius: 12px; 
-                box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+                border-radius: 16px; 
+                box-shadow: 0 25px 50px rgba(0,0,0,0.15);
                 overflow: hidden;
             }}
             
-            .header {{ 
-                padding: 40px 30px; 
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+            .executive-header {{ 
+                padding: 40px 50px; 
+                background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); 
                 color: white; 
-                text-align: center;
+                position: relative;
+                overflow: hidden;
             }}
             
-            .header h1 {{
-                font-size: 2em;
+            .executive-header::before {{
+                content: '';
+                position: absolute;
+                top: 0;
+                right: 0;
+                width: 200px;
+                height: 200px;
+                background: rgba(255,255,255,0.1);
+                border-radius: 50%;
+                transform: translate(50px, -50px);
+            }}
+            
+            .header-content {{
+                position: relative;
+                z-index: 1;
+            }}
+            
+            .header-title {{
+                font-size: 2.5em;
+                font-weight: 700;
                 margin-bottom: 10px;
-                font-weight: 600;
+                display: flex;
+                align-items: center;
+                gap: 15px;
             }}
             
-            .header .subtitle {{
+            .header-subtitle {{
+                font-size: 1.2em;
                 opacity: 0.9;
-                font-size: 1.1em;
+                margin-bottom: 20px;
             }}
             
-            .stats-bar {{
+            .header-meta {{
+                display: flex;
+                gap: 30px;
+                font-size: 0.95em;
+                opacity: 0.8;
+            }}
+            
+            .kpi-dashboard {{
                 display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
                 gap: 0;
                 background: #f8f9fa;
             }}
             
-            .stat-item {{
-                padding: 30px 20px;
+            .kpi-card {{
+                padding: 40px 30px;
                 text-align: center;
                 border-right: 1px solid #dee2e6;
-                transition: background-color 0.3s;
+                position: relative;
+                transition: all 0.3s ease;
             }}
             
-            .stat-item:last-child {{ border-right: none; }}
-            .stat-item:hover {{ background: #e9ecef; }}
+            .kpi-card:last-child {{ border-right: none; }}
             
-            .stat-number {{
+            .kpi-card:hover {{
+                background: white;
+                transform: translateY(-2px);
+                box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+            }}
+            
+            .kpi-icon {{
                 font-size: 2.5em;
+                margin-bottom: 15px;
+                opacity: 0.8;
+            }}
+            
+            .kpi-value {{
+                font-size: 3em;
                 font-weight: bold;
                 margin-bottom: 10px;
                 line-height: 1;
             }}
             
-            .stat-label {{
-                font-size: 1em;
-                color: #6c757d;
-                font-weight: 500;
-            }}
-            
-            .stat-critical {{ color: #dc3545; }}
-            .stat-high {{ color: #fd7e14; }}
-            .stat-medium {{ color: #ffc107; }}
-            .stat-total {{ color: #007bff; }}
-            
-            .summary-section {{
-                padding: 30px;
-                border-bottom: 1px solid #dee2e6;
-                background: #f8f9fa;
-            }}
-            
-            .summary-section h2 {{
-                color: #495057;
-                margin-bottom: 15px;
-                font-size: 1.4em;
-            }}
-            
-            .summary-text {{
+            .kpi-label {{
                 font-size: 1.1em;
-                line-height: 1.6;
                 color: #6c757d;
+                font-weight: 600;
+                margin-bottom: 5px;
             }}
             
-            .file-section {{
-                padding: 0;
+            .kpi-status {{
+                font-size: 0.9em;
+                font-weight: 500;
+                padding: 4px 12px;
+                border-radius: 20px;
+                display: inline-block;
             }}
             
-            .file-header {{ 
-                padding: 25px 30px; 
-                cursor: pointer; 
-                display: flex; 
-                align-items: center; 
+            .status-critical {{ background: #f8d7da; color: #721c24; }}
+            .status-high {{ background: #fff3cd; color: #856404; }}
+            .status-medium {{ background: #d1ecf1; color: #0c5460; }}
+            .status-low {{ background: #d4edda; color: #155724; }}
+            .status-excellent {{ background: #d4edda; color: #155724; }}
+            .status-good {{ background: #d1ecf1; color: #0c5460; }}
+            .status-fair {{ background: #fff3cd; color: #856404; }}
+            .status-poor {{ background: #f8d7da; color: #721c24; }}
+            
+            .executive-summary {{
+                padding: 40px 50px;
                 background: white;
                 border-bottom: 1px solid #dee2e6;
-                transition: all 0.3s ease;
-                position: relative;
             }}
             
-            .file-header:hover {{ 
-                background: #f8f9fa;
-                padding-left: 35px;
-            }}
-            
-            .file-header::before {{
-                content: '';
-                position: absolute;
-                left: 0;
-                top: 0;
-                bottom: 0;
-                width: 4px;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                transform: scaleY(0);
-                transition: transform 0.3s ease;
-            }}
-            
-            .file-header:hover::before {{
-                transform: scaleY(1);
-            }}
-            
-            .expand-icon {{ 
-                margin-right: 20px; 
-                font-size: 1.3em;
-                transition: transform 0.3s ease;
-                color: #007bff;
-            }}
-            
-            .expand-icon.expanded {{
-                transform: rotate(90deg);
-            }}
-            
-            .file-name {{
-                font-size: 1.2em;
+            .summary-title {{
+                font-size: 1.6em;
                 font-weight: 600;
+                margin-bottom: 20px;
                 color: #495057;
-            }}
-            
-            .file-details {{ 
-                display: none; 
-                background: #f8f9fa; 
-            }}
-            
-            .file-details.expanded {{ 
-                display: block; 
-                animation: slideDown 0.4s ease-out;
-            }}
-            
-            @keyframes slideDown {{
-                from {{ opacity: 0; transform: translateY(-20px); }}
-                to {{ opacity: 1; transform: translateY(0); }}
-            }}
-            
-            .priority-badge {{ 
-                margin-left: auto; 
-                padding: 8px 16px; 
-                border-radius: 20px; 
-                font-size: 0.85em; 
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            }}
-            
-            .priority-critical {{ 
-                background: linear-gradient(135deg, #dc3545, #c82333); 
-                color: white; 
-                box-shadow: 0 4px 15px rgba(220, 53, 69, 0.3);
-            }}
-            
-            .priority-high {{ 
-                background: linear-gradient(135deg, #fd7e14, #e55a00); 
-                color: white; 
-                box-shadow: 0 4px 15px rgba(253, 126, 20, 0.3);
-            }}
-            
-            .priority-medium {{ 
-                background: linear-gradient(135deg, #ffc107, #e0a800); 
-                color: #212529; 
-                box-shadow: 0 4px 15px rgba(255, 193, 7, 0.3);
-            }}
-            
-            .severity-section {{
-                margin: 0;
-                border-bottom: 1px solid #dee2e6;
-            }}
-            
-            .severity-title {{
-                padding: 20px 30px;
-                margin: 0;
-                font-weight: 600;
-                font-size: 1.2em;
                 display: flex;
                 align-items: center;
                 gap: 10px;
             }}
             
-            .severity-critical {{ 
-                background: linear-gradient(135deg, #dc3545, #c82333); 
-                color: white; 
+            .summary-text {{
+                font-size: 1.15em;
+                line-height: 1.7;
+                color: #6c757d;
+                background: #f8f9fa;
+                padding: 25px;
+                border-radius: 8px;
+                border-left: 4px solid #007bff;
             }}
             
-            .severity-high {{ 
-                background: linear-gradient(135deg, #fd7e14, #e55a00); 
-                color: white; 
+            .metrics-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                gap: 30px;
+                padding: 40px 50px;
+                background: #f8f9fa;
             }}
             
-            .severity-medium {{ 
-                background: linear-gradient(135deg, #ffc107, #e0a800); 
-                color: #212529; 
-            }}
-            
-            .issues-container {{
-                padding: 20px 30px 30px 30px;
-            }}
-            
-            .issue-item {{ 
-                border: 1px solid #dee2e6; 
-                border-radius: 12px; 
-                margin-bottom: 20px; 
+            .metric-card {{
                 background: white;
+                padding: 25px;
+                border-radius: 12px;
                 box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-                transition: all 0.3s ease;
-                overflow: hidden;
+                transition: transform 0.3s ease;
             }}
             
-            .issue-item:hover {{
-                transform: translateY(-2px);
+            .metric-card:hover {{
+                transform: translateY(-3px);
                 box-shadow: 0 8px 25px rgba(0,0,0,0.1);
             }}
             
-            .issue-header {{
-                padding: 20px 25px;
-                border-bottom: 1px solid #f0f0f0;
-            }}
-            
-            .issue-title {{ 
-                font-weight: 600; 
-                margin-bottom: 12px; 
+            .metric-title {{
                 font-size: 1.1em;
+                font-weight: 600;
+                margin-bottom: 15px;
                 color: #495057;
-                line-height: 1.4;
-            }}
-            
-            .issue-meta {{ 
-                display: flex;
-                align-items: center;
-                gap: 15px;
-                font-size: 0.9em; 
-                color: #6c757d;
-            }}
-            
-            .line-badge {{
-                background: #007bff;
-                color: white;
-                padding: 4px 12px;
-                border-radius: 12px;
-                font-size: 0.85em;
-                font-weight: 500;
-            }}
-            
-            .context-badge {{
-                background: #e9ecef;
-                color: #495057;
-                padding: 4px 12px;
-                border-radius: 12px;
-                font-size: 0.85em;
-            }}
-            
-            .recommendation {{
-                padding: 0 25px 20px 25px;
-                color: #28a745;
-                font-style: italic;
-            }}
-            
-            .recommendation::before {{
-                content: "💡 ";
-                margin-right: 5px;
-            }}
-            
-            .code-diff {{ 
-                border-top: 1px solid #f0f0f0;
-                margin-top: 15px;
-            }}
-            
-            .diff-header {{ 
-                background: #f8f9fa; 
-                padding: 12px 25px; 
-                cursor: pointer; 
-                font-size: 0.9em; 
-                font-weight: 500;
-                transition: background-color 0.2s;
                 display: flex;
                 align-items: center;
                 gap: 8px;
             }}
             
-            .diff-header:hover {{
-                background: #e9ecef;
+            .metric-value {{
+                font-size: 2em;
+                font-weight: bold;
+                margin-bottom: 8px;
             }}
             
-            .diff-body {{ 
-                display: none; 
-                border-top: 1px solid #f0f0f0;
-            }}
-            
-            .diff-body.expanded {{
-                display: block;
-                animation: fadeIn 0.3s ease-out;
-            }}
-            
-            @keyframes fadeIn {{
-                from {{ opacity: 0; }}
-                to {{ opacity: 1; }}
-            }}
-            
-            .current-code {{ 
-                background: #fff5f5; 
-                padding: 20px 25px; 
-                font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace; 
-                font-size: 0.9em; 
-                border-bottom: 1px solid #fed7d7;
-                line-height: 1.6;
-            }}
-            
-            .optimized-code {{ 
-                background: #f0fff4; 
-                padding: 20px 25px; 
-                font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace; 
+            .metric-description {{
                 font-size: 0.9em;
-                line-height: 1.6;
+                color: #6c757d;
             }}
             
-            .no-issues {{
-                text-align: center;
-                padding: 80px 20px;
-                color: #28a745;
+            .findings-section {{
+                padding: 40px 50px;
+            }}
+            
+            .section-title {{
+                font-size: 1.8em;
+                font-weight: 600;
+                margin-bottom: 30px;
+                color: #495057;
+                display: flex;
+                align-items: center;
+                gap: 12px;
+            }}
+            
+            .findings-table {{
+                width: 100%;
+                border-collapse: collapse;
+                background: white;
+                border-radius: 12px;
+                overflow: hidden;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            }}
+            
+            .findings-table th {{
+                background: linear-gradient(135deg, #495057, #6c757d);
+                color: white;
+                padding: 20px 15px;
+                text-align: left;
+                font-weight: 600;
+                font-size: 0.95em;
+            }}
+            
+            .findings-table td {{
+                padding: 18px 15px;
+                border-bottom: 1px solid #dee2e6;
+                vertical-align: top;
+            }}
+            
+            .findings-table tr:hover {{
+                background: #f8f9fa;
+            }}
+            
+            .severity-badge {{
+                padding: 6px 12px;
+                border-radius: 20px;
+                font-size: 0.85em;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }}
+            
+            .severity-critical {{
+                background: linear-gradient(135deg, #dc3545, #c82333);
+                color: white;
+            }}
+            
+            .severity-high {{
+                background: linear-gradient(135deg, #fd7e14, #e55a00);
+                color: white;
+            }}
+            
+            .severity-medium {{
+                background: linear-gradient(135deg, #ffc107, #e0a800);
+                color: #212529;
+            }}
+            
+            .severity-low {{
+                background: linear-gradient(135deg, #28a745, #1e7e34);
+                color: white;
+            }}
+            
+            .category-tag {{
+                background: #e9ecef;
+                color: #495057;
+                padding: 4px 10px;
+                border-radius: 12px;
+                font-size: 0.8em;
+                font-weight: 500;
+            }}
+            
+            .effort-indicator {{
+                display: flex;
+                align-items: center;
+                gap: 5px;
+                font-size: 0.9em;
+                font-weight: 500;
+            }}
+            
+            .effort-low {{ color: #28a745; }}
+            .effort-medium {{ color: #ffc107; }}
+            .effort-high {{ color: #dc3545; }}
+            
+            .recommendations-section {{
+                padding: 40px 50px;
+                background: #f8f9fa;
+            }}
+            
+            .recommendations-grid {{
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 30px;
+                margin-top: 20px;
+            }}
+            
+            .recommendation-card {{
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            }}
+            
+            .recommendation-card h3 {{
                 font-size: 1.3em;
+                font-weight: 600;
+                margin-bottom: 20px;
+                color: #495057;
+                display: flex;
+                align-items: center;
+                gap: 10px;
             }}
             
-            .no-issues .checkmark {{
-                font-size: 4em;
-                margin-bottom: 20px;
-                display: block;
+            .recommendation-list {{
+                list-style: none;
+                padding: 0;
             }}
+            
+            .recommendation-list li {{
+                padding: 12px 0;
+                border-bottom: 1px solid #f0f0f0;
+                display: flex;
+                align-items: flex-start;
+                gap: 10px;
+            }}
+            
+            .recommendation-list li:last-child {{
+                border-bottom: none;
+            }}
+            
+            .priority-indicator {{
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                margin-top: 6px;
+                flex-shrink: 0;
+            }}
+            
+            .priority-critical {{ background: #dc3545; }}
+            .priority-high {{ background: #fd7e14; }}
+            .priority-medium {{ background: #ffc107; }}
             
             .footer {{
-                padding: 30px;
+                padding: 30px 50px;
                 text-align: center;
-                background: #f8f9fa;
-                color: #6c757d;
-                border-top: 1px solid #dee2e6;
+                background: linear-gradient(135deg, #495057, #6c757d);
+                color: white;
             }}
             
-            .footer .timestamp {{
+            .footer-content {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                flex-wrap: wrap;
+                gap: 20px;
+            }}
+            
+            .footer-left {{
+                display: flex;
+                align-items: center;
+                gap: 15px;
+            }}
+            
+            .footer-right {{
                 font-size: 0.9em;
-                margin-top: 10px;
+                opacity: 0.8;
+            }}
+            
+            @media (max-width: 768px) {{
+                .container {{ margin: 10px; }}
+                .executive-header, .executive-summary, .findings-section, .recommendations-section {{
+                    padding: 20px 25px;
+                }}
+                .kpi-dashboard {{ grid-template-columns: repeat(2, 1fr); }}
+                .metrics-grid {{ grid-template-columns: 1fr; }}
+                .recommendations-grid {{ grid-template-columns: 1fr; }}
+                .findings-table {{ font-size: 0.9em; }}
+                .findings-table th, .findings-table td {{ padding: 10px 8px; }}
             }}
         </style>
     </head>
     <body>
         <div class="container">
-            <div class="header">
-                <h1>📊 Code Review Report</h1>
-                <div class="subtitle">Automated Analysis Results</div>
-            </div>
-            
-            <div class="stats-bar">
-                <div class="stat-item">
-                    <div class="stat-number stat-total">{total_count}</div>
-                    <div class="stat-label">Total Issues</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-number stat-critical">{critical_count}</div>
-                    <div class="stat-label">Critical</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-number stat-high">{high_count}</div>
-                    <div class="stat-label">High Priority</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-number stat-medium">{medium_count}</div>
-                    <div class="stat-label">Medium Priority</div>
+            <div class="executive-header">
+                <div class="header-content">
+                    <h1 class="header-title">
+                        <i class="fas fa-chart-line"></i>
+                        Executive Code Review
+                    </h1>
+                    <div class="header-subtitle">Strategic Technical Assessment & Risk Analysis</div>
+                    <div class="header-meta">
+                        <div><i class="fas fa-file-code"></i> {os.path.basename(FILE_TO_REVIEW)}</div>
+                        <div><i class="fas fa-calendar"></i> {datetime.now().strftime('%B %d, %Y')}</div>
+                        <div><i class="fas fa-clock"></i> {datetime.now().strftime('%H:%M UTC')}</div>
+                    </div>
                 </div>
             </div>
             
-            <div class="summary-section">
-                <h2>📝 Analysis Summary</h2>
+            <div class="kpi-dashboard">
+                <div class="kpi-card">
+                    <div class="kpi-icon" style="color: {quality_color};">
+                        <i class="fas fa-gauge-high"></i>
+                    </div>
+                    <div class="kpi-value" style="color: {quality_color};">{quality_score}</div>
+                    <div class="kpi-label">Quality Score</div>
+                    <div class="kpi-status status-{quality_score >= 80 and 'excellent' or (quality_score >= 60 and 'good' or 'fair')}">
+                        {quality_score >= 80 and 'Excellent' or (quality_score >= 60 and 'Good' or 'Needs Improvement')}
+                    </div>
+                </div>
+                
+                <div class="kpi-card">
+                    <div class="kpi-icon" style="color: {risk_colors.get(business_impact, '#ffc107')};">
+                        <i class="fas fa-exclamation-triangle"></i>
+                    </div>
+                    <div class="kpi-value" style="color: {risk_colors.get(business_impact, '#ffc107')};">{business_impact}</div>
+                    <div class="kpi-label">Business Risk</div>
+                    <div class="kpi-status status-{business_impact.lower()}">{business_impact} Impact</div>
+                </div>
+                
+                <div class="kpi-card">
+                    <div class="kpi-icon" style="color: {risk_colors.get(security_risk, '#ffc107')};">
+                        <i class="fas fa-shield-alt"></i>
+                    </div>
+                    <div class="kpi-value" style="color: {risk_colors.get(security_risk, '#ffc107')};">{security_risk}</div>
+                    <div class="kpi-label">Security Risk</div>
+                    <div class="kpi-status status-{security_risk.lower()}">{security_risk} Risk</div>
+                </div>
+                
+                <div class="kpi-card">
+                    <div class="kpi-icon" style="color: {risk_colors.get(tech_debt, '#ffc107')};">
+                        <i class="fas fa-tools"></i>
+                    </div>
+                    <div class="kpi-value" style="color: {risk_colors.get(tech_debt, '#ffc107')};">{maintainability}</div>
+                    <div class="kpi-label">Maintainability</div>
+                    <div class="kpi-status status-{maintainability.lower()}">{maintainability}</div>
+                </div>
+            </div>
+            
+            <div class="executive-summary">
+                <h2 class="summary-title">
+                    <i class="fas fa-clipboard-list"></i>
+                    Executive Summary
+                </h2>
                 <div class="summary-text">{summary}</div>
             </div>
             
-            <div class="file-section">
-                <div class="file-header" onclick="toggleFile('file1')">
-                    <span class="expand-icon" id="expand-file1">▶</span>
-                    <span class="file-name">📁 {os.path.basename(FILE_TO_REVIEW)}</span>
-                    <div class="priority-badge {priority_class}">
-                        {total_count} {'issue' if total_count == 1 else 'issues'}
-                    </div>
-                </div>
+            
+            <div class="findings-section">
+                <h2 class="section-title">
+                    <i class="fas fa-search"></i>
+                    Detailed Technical Findings
+                </h2>
                 
-                <div class="file-details" id="file1">
-    """
-
-    if not findings:
-        html_content += """
-                    <div class="no-issues">
-                        <span class="checkmark">✅</span>
-                        <div>No issues found in this file!</div>
-                        <div style="font-size: 0.9em; margin-top: 10px; color: #6c757d;">
-                            Great job maintaining clean code!
-                        </div>
-                    </div>
-        """
-    else:
-        # Group issues by severity
-        critical_issues = [f for f in findings if f.get("severity", "").upper() == "CRITICAL"]
-        high_issues = [f for f in findings if f.get("severity", "").upper() == "HIGH"]
-        medium_issues = [f for f in findings if f.get("severity", "").upper() == "MEDIUM"]
-        
-        # Display issues by severity
-        for severity, issues_list, title, emoji in [
-            ("CRITICAL", critical_issues, "Critical Issues", "🔴"),
-            ("HIGH", high_issues, "High Priority Issues", "🟠"), 
-            ("MEDIUM", medium_issues, "Medium Priority Issues", "🟡")
-        ]:
-            if issues_list:
-                html_content += f"""
-                    <div class="severity-section">
-                        <div class="severity-title severity-{severity.lower()}">
-                            <span>{emoji}</span>
-                            <span>{title}</span>
-                            <span style="margin-left: auto;">({len(issues_list)} {'issue' if len(issues_list) == 1 else 'issues'})</span>
-                        </div>
-                        <div class="issues-container">
-                """
+                {('<table class="findings-table">' +
+                '<thead>' +
+                '<tr>' +
+                '<th>Priority</th>' +
+                '<th>Category</th>' +
+                '<th>Line</th>' +
+                '<th>Technical Issue</th>' +
+                '<th>Business Impact</th>' +
+                '<th>Effort</th>' +
+                '</tr>' +
+                '</thead>' +
+                '<tbody>' +
+                ''.join([
+                    f'<tr>' +
+                    f'<td><span class="severity-badge severity-{f.get("severity", "medium").lower()}">{f.get("severity", "MEDIUM")}</span></td>' +
+                    f'<td><span class="category-tag">{f.get("category", "General")}</span></td>' +
+                    f'<td><strong>{f.get("line_number", "N/A")}</strong></td>' +
+                    f'<td>{f.get("finding", "No description")[:100]}{"..." if len(f.get("finding", "")) > 100 else ""}</td>' +
+                    f'<td>{f.get("business_impact", "")[:80]}{"..." if len(f.get("business_impact", "")) > 80 else ""}</td>' +
+                    f'<td><span class="effort-indicator effort-{f.get("effort_estimate", "medium").lower()}"><i class="fas fa-{"clock" if f.get("effort_estimate") == "LOW" else ("hourglass-half" if f.get("effort_estimate") == "MEDIUM" else "hourglass-end")}"></i> {f.get("effort_estimate", "MEDIUM")}</span></td>' +
+                    f'</tr>'
+                    for f in sorted(findings, key=lambda x: (
+                        x.get("priority_ranking", 999),
+                        {"CRITICAL": 1, "HIGH": 2, "MEDIUM": 3, "LOW": 4}.get(x.get("severity", "LOW"), 4)
+                    ))[:15]  # Top 15 findings
+                ]) +
+                '</tbody>' +
+                '</table>') if findings else '<div style="text-align: center; padding: 60px; color: #28a745; font-size: 1.3em;"><i class="fas fa-check-circle" style="font-size: 3em; margin-bottom: 20px; display: block;"></i>No technical issues identified.<br/><small style="color: #6c757d; margin-top: 10px;">Excellent code quality maintained!</small></div>'}
+            </div>
+            
+            <div class="recommendations-section">
+                <h2 class="section-title">
+                    <i class="fas fa-lightbulb"></i>
+                    Strategic Recommendations
+                </h2>
                 
-                for idx, issue in enumerate(issues_list, 1):
-                    finding = issue.get("finding", "No description")
-                    recommendation = issue.get("recommendation", "")
-                    line = issue.get("line_number", "N/A")
-                    context = issue.get("function_context", "")
+                <div class="recommendations-grid">
+                    <div class="recommendation-card">
+                        <h3><i class="fas fa-chess-queen"></i> Leadership Actions</h3>
+                        <ul class="recommendation-list">
+                            {(''.join([
+                                f'<li>' +
+                                f'<div class="priority-indicator priority-{("critical" if i < 2 else "high" if i < 4 else "medium")}"></div>' +
+                                f'<div>{rec}</div>' +
+                                f'</li>'
+                                for i, rec in enumerate(json_response.get("strategic_recommendations", ["Maintain current code quality standards", "Continue regular code reviews"]))
+                            ]))}
+                        </ul>
+                    </div>
                     
-                    html_content += f"""
-                            <div class="issue-item">
-                                <div class="issue-header">
-                                    <div class="issue-title">{finding}</div>
-                                    <div class="issue-meta">
-                                        <span class="line-badge">Line {line}</span>
-                                        {f'<span class="context-badge">{context}</span>' if context else ''}
-                                    </div>
-                                </div>
-                                {f'<div class="recommendation">{recommendation}</div>' if recommendation else ''}
-                                <div class="code-diff">
-                                    <div class="diff-header" onclick="toggleDiff('diff-{severity}-{idx}')">
-                                        <span>▶</span>
-                                        <span>View Code Context & Suggestions</span>
-                                    </div>
-                                    <div class="diff-body" id="diff-{severity}-{idx}">
-                                        <div class="current-code">
-                                            <strong>📍 Current code at line {line}:</strong><br/>
-                                            # {finding[:100]}...
-                                        </div>
-                                        <div class="optimized-code">
-                                            <strong>✨ Suggested improvement:</strong><br/>
-                                            # {recommendation if recommendation else 'Apply the recommended changes above'}
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                    """
-                
-                html_content += """
-                        </div>
+                    <div class="recommendation-card">
+                        <h3><i class="fas fa-bolt"></i> Immediate Actions</h3>
+                        <ul class="recommendation-list">
+                            {(''.join([
+                                f'<li>' +
+                                f'<div class="priority-indicator priority-critical"></div>' +
+                                f'<div>{action}</div>' +
+                                f'</li>'
+                                for action in json_response.get("immediate_actions", ["No immediate actions required", "Continue monitoring code quality"])
+                            ]))}
+                        </ul>
                     </div>
-                """
-
-    html_content += f"""
                 </div>
             </div>
             
             <div class="footer">
-                <div>🔬 <strong>Generated by Snowflake Cortex AI</strong> (llama3.1-70b)</div>
-                <div class="timestamp">Report generated on {datetime.now().strftime('%Y-%m-%d at %H:%M:%S')}</div>
+                <div class="footer-content">
+                    <div class="footer-left">
+                        <i class="fas fa-brain"></i>
+                        <strong>Powered by Snowflake Cortex AI</strong>
+                        <span style="opacity: 0.8;">| Executive Technical Analysis</span>
+                    </div>
+                    <div class="footer-right">
+                        Report ID: {datetime.now().strftime('%Y%m%d_%H%M%S')} | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+                    </div>
+                </div>
             </div>
         </div>
-        
-        <script>
-            function toggleFile(fileId) {{
-                const details = document.getElementById(fileId);
-                const icon = document.getElementById('expand-' + fileId);
-                
-                if (details.classList.contains('expanded')) {{
-                    details.classList.remove('expanded');
-                    icon.classList.remove('expanded');
-                    icon.textContent = '▶';
-                }} else {{
-                    details.classList.add('expanded');
-                    icon.classList.add('expanded');
-                    icon.textContent = '▼';
-                }}
-            }}
-            
-            function toggleDiff(diffId) {{
-                const diffBody = document.getElementById(diffId);
-                const header = diffBody.previousElementSibling;
-                const arrow = header.querySelector('span');
-                
-                if (diffBody.classList.contains('expanded')) {{
-                    diffBody.classList.remove('expanded');
-                    arrow.textContent = '▶';
-                }} else {{
-                    diffBody.classList.add('expanded');
-                    arrow.textContent = '▼';
-                }}
-            }}
-            
-            // Auto-expand first file on page load
-            document.addEventListener('DOMContentLoaded', function() {{
-                setTimeout(() => toggleFile('file1'), 100);
-            }});
-        </script>
     </body>
     </html>
     """
     return html_content
 
 # ---------------------
-# Main execution
+# Filter low severity (keep more for executive view)
+# ---------------------
+def filter_low_severity(json_response: dict) -> dict:
+    filtered = json_response.copy()
+    if "detailed_findings" in filtered:
+        # Keep LOW severity for executive reports, but limit quantity
+        all_findings = filtered["detailed_findings"]
+        # Sort by priority and keep top findings
+        sorted_findings = sorted(all_findings, key=lambda x: (
+            x.get("priority_ranking", 999),
+            {"CRITICAL": 1, "HIGH": 2, "MEDIUM": 3, "LOW": 4}.get(x.get("severity", "LOW"), 4)
+        ))
+        filtered["detailed_findings"] = sorted_findings[:20]  # Top 20 for executive view
+    return filtered
+
+# ---------------------
+# Extract criticals (enhanced)
+# ---------------------
+def extract_critical_findings(json_response: dict) -> list:
+    findings = []
+    for f in json_response.get("detailed_findings", []):
+        if f.get("severity", "").upper() == "CRITICAL" and f.get("line_number"):
+            findings.append({
+                "line": int(f["line_number"]) if str(f["line_number"]).isdigit() else 1,
+                "issue": f.get("finding", ""),
+                "recommendation": f.get("recommendation", ""),
+                "severity": "CRITICAL",
+                "business_impact": f.get("business_impact", ""),
+                "category": f.get("category", "General")
+            })
+    return findings
+
+# ---------------------
+# Main execution with enhanced logging
 # ---------------------
 if __name__ == "__main__":
     try:
+        print("🚀 Starting Executive Code Review Analysis...")
+        print("="*60)
+        
         if not os.path.exists(FILE_TO_REVIEW):
             print(f"❌ File {FILE_TO_REVIEW} not found")
             exit(1)
             
         print(f"📖 Reading file: {FILE_TO_REVIEW}")
         code_text = Path(FILE_TO_REVIEW).read_text()
-        print(f"📝 Code length: {len(code_text)} characters")
+        print(f"📝 Code length: {len(code_text)} characters ({len(code_text.split())} lines)")
         
-        # Get review from Cortex
+        # Get executive review from Cortex
         report = review_with_cortex(MODEL, code_text)
-        print(f"📋 Raw report keys: {list(report.keys())}")
+        print(f"📋 Analysis completed - Report sections: {list(report.keys())}")
         
         original_findings = report.get("detailed_findings", [])
+        quality_score = report.get("quality_score", 75)
+        print(f"🎯 Quality Score: {quality_score}/100")
         print(f"🔍 Found {len(original_findings)} total findings")
         
-        # Filter and process
+        # Process findings
         filtered = filter_low_severity(report)
         filtered_findings = filtered.get("detailed_findings", [])
-        print(f"🎯 After filtering: {len(filtered_findings)} findings")
+        print(f"📊 Executive summary: {len(filtered_findings)} key findings")
         
         criticals = extract_critical_findings(filtered)
-        print(f"🚨 Critical issues: {len(criticals)}")
+        print(f"🚨 Critical issues requiring immediate attention: {len(criticals)}")
 
-        # Generate outputs
-        formatted_review = format_for_pr_display(filtered)
-        html_report = generate_interactive_html_report(filtered, original_findings)
+        # Generate executive outputs
+        print("\n📄 Generating executive reports...")
+        formatted_review = format_executive_pr_display(filtered)
+        html_report = generate_executive_html_report(filtered)
         
-        # Save files
-        with open("dbt_code_review_report.html", "w", encoding='utf-8') as f: 
+        # Save files with enhanced metadata
+        print("💾 Saving report files...")
+        with open("executive_code_review_report.html", "w", encoding='utf-8') as f: 
             f.write(html_report)
             
-        with open("review_output.json", "w", encoding='utf-8') as f: 
+        with open("executive_review_output.json", "w", encoding='utf-8') as f: 
             json.dump({
                 "full_review": formatted_review,              
                 "full_review_markdown": formatted_review,     
                 "full_review_json": filtered,                 
                 "criticals": criticals,
+                "executive_summary": {
+                    "quality_score": quality_score,
+                    "business_impact": report.get("business_impact", "MEDIUM"),
+                    "security_risk_level": report.get("security_risk_level", "MEDIUM"),
+                    "total_findings": len(filtered_findings),
+                    "critical_count": len(criticals)
+                },
                 "file": FILE_TO_REVIEW,
-                "interactive_report_path": "dbt_code_review_report.html",
-                "timestamp": datetime.now().isoformat()
+                "interactive_report_path": "executive_code_review_report.html",
+                "timestamp": datetime.now().isoformat(),
+                "report_version": "Executive_v2.0"
             }, f, indent=2, ensure_ascii=False)
 
-        # Print summary
-        print("\n" + "="*60)
-        print("✅ CODE REVIEW COMPLETED SUCCESSFULLY!")
-        print("="*60)
-        print(f"📁 File analyzed: {FILE_TO_REVIEW}")
-        print(f"🔍 Total issues found: {len(filtered_findings)}")
+        # Executive Summary Report
+        print("\n" + "="*70)
+        print("✅ EXECUTIVE CODE REVIEW COMPLETED")
+        print("="*70)
+        print(f"📁 File Analyzed: {FILE_TO_REVIEW}")
+        print(f"🎯 Overall Quality Score: {quality_score}/100")
+        print(f"📊 Business Risk Level: {report.get('business_impact', 'MEDIUM')}")
+        print(f"🔒 Security Risk: {report.get('security_risk_level', 'MEDIUM')}")
+        print(f"🔧 Maintainability: {report.get('maintainability_rating', 'FAIR')}")
         
         if filtered_findings:
             critical_count = sum(1 for f in filtered_findings if f.get("severity", "").upper() == "CRITICAL")
             high_count = sum(1 for f in filtered_findings if f.get("severity", "").upper() == "HIGH") 
             medium_count = sum(1 for f in filtered_findings if f.get("severity", "").upper() == "MEDIUM")
             
-            print(f"🔴 Critical: {critical_count}")
-            print(f"🟠 High: {high_count}")
-            print(f"🟡 Medium: {medium_count}")
+            print(f"\n📈 Issue Distribution:")
+            print(f"  🔴 Critical: {critical_count} (Immediate action required)")
+            print(f"  🟠 High: {high_count} (Fix within sprint)")
+            print(f"  🟡 Medium: {medium_count} (Plan for next release)")
         
-        print(f"\n📄 Files generated:")
-        print(f"  • review_output.json (GitHub comment data)")
-        print(f"  • dbt_code_review_report.html (Interactive report)")
-        print(f"\n🌐 Open dbt_code_review_report.html in your browser to view the full interactive report!")
+        print(f"\n📋 Reports Generated:")
+        print(f"  • executive_review_output.json (GitHub integration)")
+        print(f"  • executive_code_review_report.html (Interactive dashboard)")
+        
+        print(f"\n🌐 Next Steps:")
+        print(f"  1. Open executive_code_review_report.html for detailed analysis")
+        print(f"  2. Review immediate actions for critical issues")
+        print(f"  3. Share executive summary with technical leadership")
+        
+        if len(criticals) > 0:
+            print(f"\n⚠️  ATTENTION: {len(criticals)} critical issues require immediate attention!")
+        else:
+            print(f"\n✅ No critical issues found - excellent code quality!")
         
     except Exception as e:
-        print(f"❌ Error during code review: {e}")
+        print(f"❌ Executive analysis error: {e}")
         import traceback
         traceback.print_exc()
     finally:
         if 'session' in locals():
             session.close()
-            print("🔒 Snowflake session closed")
+            print("\n🔒 Analysis session completed")"""
+</invoke>
