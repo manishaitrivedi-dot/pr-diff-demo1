@@ -893,41 +893,101 @@ def generate_executive_html_report(json_response: dict) -> str:
                 <div class="summary-text">{summary}</div>
             </div>
             
+    """
+    
+    # Generate findings table HTML
+    if findings:
+        findings_html = """
+            <table class="findings-table">
+                <thead>
+                    <tr>
+                        <th>Priority</th>
+                        <th>Category</th>
+                        <th>Line</th>
+                        <th>Technical Issue</th>
+                        <th>Business Impact</th>
+                        <th>Effort</th>
+                    </tr>
+                </thead>
+                <tbody>
+        """
+        
+        # Sort findings by priority
+        sorted_findings = sorted(findings, key=lambda x: (
+            x.get("priority_ranking", 999),
+            {"CRITICAL": 1, "HIGH": 2, "MEDIUM": 3, "LOW": 4}.get(x.get("severity", "LOW"), 4)
+        ))[:15]  # Top 15 findings
+        
+        for f in sorted_findings:
+            severity = f.get("severity", "MEDIUM").upper()
+            category = f.get("category", "General")
+            line_num = f.get("line_number", "N/A")
+            finding = f.get("finding", "No description")
+            business_impact = f.get("business_impact", "")
+            effort = f.get("effort_estimate", "MEDIUM").upper()
             
+            # Truncate long text
+            finding_text = finding[:100] + ("..." if len(finding) > 100 else "")
+            impact_text = business_impact[:80] + ("..." if len(business_impact) > 80 else "")
+            
+            # Icon for effort
+            effort_icon = "clock" if effort == "LOW" else ("hourglass-half" if effort == "MEDIUM" else "hourglass-end")
+            
+            findings_html += f"""
+                    <tr>
+                        <td><span class="severity-badge severity-{severity.lower()}">{severity}</span></td>
+                        <td><span class="category-tag">{category}</span></td>
+                        <td><strong>{line_num}</strong></td>
+                        <td>{finding_text}</td>
+                        <td>{impact_text}</td>
+                        <td><span class="effort-indicator effort-{effort.lower()}"><i class="fas fa-{effort_icon}"></i> {effort}</span></td>
+                    </tr>
+            """
+        
+        findings_html += """
+                </tbody>
+            </table>
+        """
+    else:
+        findings_html = """
+            <div style="text-align: center; padding: 60px; color: #28a745; font-size: 1.3em;">
+                <i class="fas fa-check-circle" style="font-size: 3em; margin-bottom: 20px; display: block;"></i>
+                No technical issues identified.<br/>
+                <small style="color: #6c757d; margin-top: 10px;">Excellent code quality maintained!</small>
+            </div>
+        """
+    
+    # Generate recommendations HTML
+    strategic_recs = json_response.get("strategic_recommendations", ["Maintain current code quality standards", "Continue regular code reviews"])
+    immediate_actions = json_response.get("immediate_actions", ["No immediate actions required", "Continue monitoring code quality"])
+    
+    strategic_html = ""
+    for i, rec in enumerate(strategic_recs):
+        priority_class = "critical" if i < 2 else "high" if i < 4 else "medium"
+        strategic_html += f"""
+            <li>
+                <div class="priority-indicator priority-{priority_class}"></div>
+                <div>{rec}</div>
+            </li>
+        """
+    
+    immediate_html = ""
+    for action in immediate_actions:
+        immediate_html += f"""
+            <li>
+                <div class="priority-indicator priority-critical"></div>
+                <div>{action}</div>
+            </li>
+        """
+    
+    # Complete the HTML
+    html_content += f"""
             <div class="findings-section">
                 <h2 class="section-title">
                     <i class="fas fa-search"></i>
                     Detailed Technical Findings
                 </h2>
-                
-                {('<table class="findings-table">' +
-                '<thead>' +
-                '<tr>' +
-                '<th>Priority</th>' +
-                '<th>Category</th>' +
-                '<th>Line</th>' +
-                '<th>Technical Issue</th>' +
-                '<th>Business Impact</th>' +
-                '<th>Effort</th>' +
-                '</tr>' +
-                '</thead>' +
-                '<tbody>' +
-                ''.join([
-                    f'<tr>' +
-                    f'<td><span class="severity-badge severity-{f.get("severity", "medium").lower()}">{f.get("severity", "MEDIUM")}</span></td>' +
-                    f'<td><span class="category-tag">{f.get("category", "General")}</span></td>' +
-                    f'<td><strong>{f.get("line_number", "N/A")}</strong></td>' +
-                    f'<td>{f.get("finding", "No description")[:100]}{"..." if len(f.get("finding", "")) > 100 else ""}</td>' +
-                    f'<td>{f.get("business_impact", "")[:80]}{"..." if len(f.get("business_impact", "")) > 80 else ""}</td>' +
-                    f'<td><span class="effort-indicator effort-{f.get("effort_estimate", "medium").lower()}"><i class="fas fa-{"clock" if f.get("effort_estimate") == "LOW" else ("hourglass-half" if f.get("effort_estimate") == "MEDIUM" else "hourglass-end")}"></i> {f.get("effort_estimate", "MEDIUM")}</span></td>' +
-                    f'</tr>'
-                    for f in sorted(findings, key=lambda x: (
-                        x.get("priority_ranking", 999),
-                        {"CRITICAL": 1, "HIGH": 2, "MEDIUM": 3, "LOW": 4}.get(x.get("severity", "LOW"), 4)
-                    ))[:15]  # Top 15 findings
-                ]) +
-                '</tbody>' +
-                '</table>') if findings else '<div style="text-align: center; padding: 60px; color: #28a745; font-size: 1.3em;"><i class="fas fa-check-circle" style="font-size: 3em; margin-bottom: 20px; display: block;"></i>No technical issues identified.<br/><small style="color: #6c757d; margin-top: 10px;">Excellent code quality maintained!</small></div>'}
+                {findings_html}
             </div>
             
             <div class="recommendations-section">
@@ -940,26 +1000,14 @@ def generate_executive_html_report(json_response: dict) -> str:
                     <div class="recommendation-card">
                         <h3><i class="fas fa-chess-queen"></i> Leadership Actions</h3>
                         <ul class="recommendation-list">
-                            {(''.join([
-                                f'<li>' +
-                                f'<div class="priority-indicator priority-{("critical" if i < 2 else "high" if i < 4 else "medium")}"></div>' +
-                                f'<div>{rec}</div>' +
-                                f'</li>'
-                                for i, rec in enumerate(json_response.get("strategic_recommendations", ["Maintain current code quality standards", "Continue regular code reviews"]))
-                            ]))}
+                            {strategic_html}
                         </ul>
                     </div>
                     
                     <div class="recommendation-card">
                         <h3><i class="fas fa-bolt"></i> Immediate Actions</h3>
                         <ul class="recommendation-list">
-                            {(''.join([
-                                f'<li>' +
-                                f'<div class="priority-indicator priority-critical"></div>' +
-                                f'<div>{action}</div>' +
-                                f'</li>'
-                                for action in json_response.get("immediate_actions", ["No immediate actions required", "Continue monitoring code quality"])
-                            ]))}
+                            {immediate_html}
                         </ul>
                     </div>
                 </div>
@@ -981,6 +1029,7 @@ def generate_executive_html_report(json_response: dict) -> str:
     </body>
     </html>
     """
+    
     return html_content
 
 # ---------------------
