@@ -433,6 +433,20 @@ def main():
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(consolidated_json, f, indent=2)
 
+        # Generate review_output.json for inline_comment.py compatibility
+        review_output_data = {
+            "full_review": executive_summary,
+            "full_review_markdown": executive_summary,
+            "full_review_json": consolidated_json,
+            "criticals": [f for f in consolidated_json.get("detailed_findings", []) if str(f.get("severity", "")).upper() == "CRITICAL"],
+            "file": processed_files[0] if processed_files else "unknown",
+            "timestamp": datetime.now().isoformat()
+        }
+
+        with open("review_output.json", "w", encoding='utf-8') as f:
+            json.dump(review_output_data, f, indent=2, ensure_ascii=False)
+        print("  ✅ review_output.json saved for inline_comment.py compatibility")
+
         if 'GITHUB_OUTPUT' in os.environ:
             delimiter = str(uuid.uuid4())
             with open(os.environ['GITHUB_OUTPUT'], 'a') as gh_out:
