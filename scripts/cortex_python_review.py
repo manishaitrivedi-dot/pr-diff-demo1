@@ -7,7 +7,7 @@ from datetime import datetime
 # ---------------------
 # Config
 # ---------------------
-MODEL = "openai-gpt-4.1"
+MODEL = "llama3.1-70b"
 MAX_CODE_CHARS = 40_000
 FILE_TO_REVIEW = "scripts/simple_test.py"
 
@@ -26,59 +26,109 @@ cfg = {
 session = Session.builder.configs(cfg).create()
 
 # ---------------------
-# Enhanced Prompt template for executive-level analysis
+# Professional Prompt Templates (from provided code)
 # ---------------------
-PROMPT_TEMPLATE = """You are a senior software architect performing an executive-level code review. Analyze the Python code for business impact, technical debt, security risks, and maintainability.
+PROMPT_TEMPLATE = """Please act as a principal-level Python code reviewer. Your review must be concise, accurate, and directly actionable, as it will be posted as a GitHub Pull Request comment.
 
-IMPORTANT: Respond ONLY with valid JSON in this exact format:
-{
-    "executive_summary": "High-level assessment of code quality, business risks, and overall technical debt",
-    "quality_score": 85,
-    "business_impact": "LOW|MEDIUM|HIGH - overall business risk assessment",
-    "technical_debt_score": "LOW|MEDIUM|HIGH",
-    "security_risk_level": "LOW|MEDIUM|HIGH|CRITICAL",
-    "maintainability_rating": "POOR|FAIR|GOOD|EXCELLENT",
-    "detailed_findings": [
-        {
-            "severity": "CRITICAL|HIGH|MEDIUM|LOW",
-            "category": "Security|Performance|Maintainability|Best Practices|Documentation|Error Handling",
-            "line_number": "actual_line_number",
-            "function_context": "function_name_if_applicable",
-            "finding": "Detailed technical issue description",
-            "business_impact": "How this affects business operations or risk",
-            "recommendation": "Specific technical solution",
-            "effort_estimate": "LOW|MEDIUM|HIGH - effort to fix",
-            "priority_ranking": 1
-        }
-    ],
-    "metrics": {
-        "lines_of_code": 150,
-        "complexity_score": "LOW|MEDIUM|HIGH",
-        "code_coverage_gaps": ["area1", "area2"],
-        "dependency_risks": ["risk1", "risk2"]
-    },
-    "strategic_recommendations": [
-        "High-level recommendation for technical leadership",
-        "Process improvement suggestion"
-    ],
-    "immediate_actions": [
-        "Critical item requiring immediate attention",
-        "Quick win opportunity"
-    ]
-}
+---
+# CONTEXT: HOW TO REVIEW (Apply Silently)
 
-Code to review:
-```python
+1.  **You are reviewing a code file for executive-level analysis.** Focus on business impact, technical debt, security risks, and maintainability.
+2.  **Focus your review on the most critical aspects.** Prioritize findings that have business impact or security implications.
+3.  **Infer context from the full code.** Base your review on the complete file provided.
+4.  **Your entire response MUST be under 65,000 characters.** Prioritize findings with `High` or `Critical` severity. If the review is extensive, omit `Low` severity findings to meet the length constraint.
+
+# REVIEW PRIORITIES (Strict Order)
+1.  Security & Correctness
+2.  Reliability & Error-handling
+3.  Performance & Complexity
+4.  Readability & Maintainability
+5.  Testability
+
+# ELIGIBILITY CRITERIA FOR FINDINGS (ALL must be met)
+-   **Evidence:** Quote the exact code snippet and cite the line number.
+-   **Severity:** Assign {{Low | Medium | High | Critical}}.
+-   **Impact & Action:** Briefly explain the issue and provide a minimal, safe correction.
+-   **Non-trivial:** Skip purely stylistic nits (e.g., import order, line length) that a linter would catch.
+
+# HARD CONSTRAINTS (For accuracy & anti-hallucination)
+-   Do NOT propose APIs that don't exist for the imported modules.
+-   Treat parameters like `db_path` as correct dependency injection; do NOT call them hardcoded.
+-   NEVER suggest logging sensitive user data or internal paths. Suggest non-reversible fingerprints if context is needed.
+-   Do NOT recommend removing correct type hints or docstrings.
+-   If code in the file is already correct and idiomatic, do NOT invent problems.
+
+---
+# OUTPUT FORMAT (Strict, professional, audit-ready)
+
+Your entire response MUST be under 65,000 characters. Prioritize findings with High or Critical severity. If the review is extensive, omit Low severity findings to meet the length constraint.
+
+## Code Review Summary
+*A 2-3 sentence high-level summary. Mention the key strengths and the most critical areas for improvement.*
+
+---
+### Detailed Findings
+*A list of all material findings. If no significant issues are found, state "No significant issues found."*
+
+**File:** {filename}
+-   **Severity:** {{Critical | High | Medium | Low}}
+-   **Line:** {{line_number}}
+-   **Function/Context:** `{{function_name_if_applicable}}`
+-   **Finding:** {{A clear, concise description of the issue, its impact, and a recommended correction.}}
+
+**(Repeat for each finding)**
+
+---
+### Key Recommendations
+*Provide 2-3 high-level, actionable recommendations for improving the overall quality of the codebase based on the findings. Do not repeat the findings themselves.*
+
+---
+# CODE TO REVIEW
+
 {PY_CONTENT}
-```
+"""
 
-Focus on:
-- CRITICAL: Security vulnerabilities, data breaches, system failures
-- HIGH: Performance bottlenecks, architectural issues, compliance risks  
-- MEDIUM: Code quality, maintainability concerns, technical debt
-- LOW: Style issues, minor optimizations
+# Consolidation prompt for executive summary
+PROMPT_TEMPLATE_CONSOLIDATED_SUMMARY = """
+You are an expert code review summarization engine for executive-level reporting. Your task is to analyze individual code reviews and generate a single, consolidated executive summary with business impact focus.
 
-Provide executive-level insights focusing on business impact and strategic technical decisions."""
+You MUST respond ONLY with a valid JSON object that conforms to the executive schema. Do not include any other text, explanations, or markdown formatting outside of the JSON structure.
+
+Follow these instructions to populate the JSON fields:
+
+1.  **`executive_summary` (string):** Write a 2-3 sentence high-level summary of the entire code change, covering the most important findings across all files with business impact focus.
+2.  **`quality_score` (number):** Assign an overall quality score (0-100) based on severity and number of findings.
+3.  **`business_impact` (string):** Assess overall business risk as "LOW", "MEDIUM", or "HIGH".
+4.  **`technical_debt_score` (string):** Evaluate technical debt as "LOW", "MEDIUM", or "HIGH".
+5.  **`security_risk_level` (string):** Determine security risk as "LOW", "MEDIUM", "HIGH", or "CRITICAL".
+6.  **`maintainability_rating` (string):** Rate maintainability as "POOR", "FAIR", "GOOD", or "EXCELLENT".
+7.  **`detailed_findings` (array of objects):** Create an array of objects, where each object represents a single, distinct issue found in the code:
+         -   **`severity`**: Assess and assign severity: "Low", "Medium", "High", or "Critical".
+         -   **`category`**: Assign category: "Security", "Performance", "Maintainability", "Best Practices", "Documentation", or "Error Handling".
+         -   **`line_number`**: Extract the specific line number if mentioned in the review. If no line number is available, use the string "N/A".
+         -   **`function_context`**: From the review text, identify the function or class name where the issue is located. If not applicable, use "global scope".
+         -   **`finding`**: Write a clear, concise description of the issue, its potential impact, and a concrete recommendation.
+         -   **`business_impact`**: Explain how this affects business operations or risk.
+         -   **`recommendation`**: Provide specific technical solution.
+         -   **`effort_estimate`**: Estimate effort as "LOW", "MEDIUM", or "HIGH".
+         -   **`priority_ranking`**: Assign priority ranking (1 = highest priority).
+8.  **`metrics` (object):** Include technical metrics:
+         -   **`lines_of_code`**: Number of lines analyzed.
+         -   **`complexity_score`**: "LOW", "MEDIUM", or "HIGH".
+         -   **`code_coverage_gaps`**: Array of areas needing test coverage.
+         -   **`dependency_risks`**: Array of dependency-related risks.
+9.  **`strategic_recommendations` (array of strings):** Provide 2-3 high-level, actionable recommendations for technical leadership.
+10. **`immediate_actions` (array of strings):** List critical items requiring immediate attention.
+
+**CRITICAL INSTRUCTION FOR LARGE REVIEWS:**
+Your entire response MUST be under 65,000 characters. If the number of findings is very large, you MUST prioritize.
+-   First, only include findings with **'Critical' and 'High' severity** in the `detailed_findings` array.
+-   If there is still not enough space, summarize the 'Medium' severity findings in the main `executive_summary` field instead of listing them individually.
+-   'Low' severity findings can be ignored if space is limited.
+
+Here are the individual code reviews to process:
+{ALL_REVIEWS_CONTENT}
+"""
 
 def build_prompt(code_text: str) -> str:
     code_text = code_text[:MAX_CODE_CHARS]
