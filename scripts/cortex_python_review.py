@@ -1,14 +1,20 @@
-import os, json, re
+import os, sys, json, re, uuid
 from pathlib import Path
 from snowflake.snowpark import Session
+from snowflake.cortex import complete
+from snowflake.cortex._complete import CompleteOptions
 import pandas as pd
 from datetime import datetime
+import tiktoken
 
 # ---------------------
 # Config
 # ---------------------
-MODEL = "llama3.1-70b"
-MAX_CODE_CHARS = 40_000
+MODEL = "openai-gpt-4.1"
+MAX_CHARS_FOR_FINAL_SUMMARY_FILE = 65000
+MAX_TOKENS_FOR_SUMMARY_INPUT = 100000
+
+# For single file testing (when not using directory mode)
 FILE_TO_REVIEW = "scripts/simple_test.py"
 
 # ---------------------
@@ -16,7 +22,7 @@ FILE_TO_REVIEW = "scripts/simple_test.py"
 # ---------------------
 cfg = {
     "account": "XKB93357.us-west-2",
-    "user": "MANISHAT007",
+    "user": "MANISHAT007", 
     "password": "Welcome@987654321",
     "role": "ORGADMIN",
     "warehouse": "COMPUTE_WH",
@@ -26,9 +32,9 @@ cfg = {
 session = Session.builder.configs(cfg).create()
 
 # ---------------------
-# Professional Prompt Templates (from provided code)
+# PROMPT 1: Individual File Review (from teammate)
 # ---------------------
-PROMPT_TEMPLATE = """Please act as a principal-level Python code reviewer. Your review must be concise, accurate, and directly actionable, as it will be posted as a GitHub Pull Request comment.
+PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level Python code reviewer. Your review must be concise, accurate, and directly actionable, as it will be posted as a GitHub Pull Request comment.
 
 ---
 # CONTEXT: HOW TO REVIEW (Apply Silently)
@@ -88,8 +94,10 @@ Your entire response MUST be under 65,000 characters. Prioritize findings with H
 {PY_CONTENT}
 """
 
-# Consolidation prompt for executive summary
-PROMPT_TEMPLATE_CONSOLIDATED_SUMMARY = """
+# ---------------------
+# PROMPT 2: Consolidation (from teammate, modified for executive output)
+# ---------------------
+PROMPT_TEMPLATE_CONSOLIDATED = """
 You are an expert code review summarization engine for executive-level reporting. Your task is to analyze individual code reviews and generate a single, consolidated executive summary with business impact focus.
 
 You MUST respond ONLY with a valid JSON object that conforms to the executive schema. Do not include any other text, explanations, or markdown formatting outside of the JSON structure.
@@ -105,15 +113,16 @@ Follow these instructions to populate the JSON fields:
 7.  **`detailed_findings` (array of objects):** Create an array of objects, where each object represents a single, distinct issue found in the code:
          -   **`severity`**: Assess and assign severity: "Low", "Medium", "High", or "Critical".
          -   **`category`**: Assign category: "Security", "Performance", "Maintainability", "Best Practices", "Documentation", or "Error Handling".
-         -   **`line_number`**: Extract the specific line number if mentioned in the review. If no line number is available, use the string "N/A".
+         -   **`line_number`**: Extract the specific line number if mentioned in the review. If no line number is available, use "N/A".
          -   **`function_context`**: From the review text, identify the function or class name where the issue is located. If not applicable, use "global scope".
          -   **`finding`**: Write a clear, concise description of the issue, its potential impact, and a concrete recommendation.
          -   **`business_impact`**: Explain how this affects business operations or risk.
          -   **`recommendation`**: Provide specific technical solution.
          -   **`effort_estimate`**: Estimate effort as "LOW", "MEDIUM", or "HIGH".
          -   **`priority_ranking`**: Assign priority ranking (1 = highest priority).
+         -   **`filename`**: The name of the file where the issue was found.
 8.  **`metrics` (object):** Include technical metrics:
-         -   **`lines_of_code`**: Number of lines analyzed.
+         -   **`lines_of_code`**: Total number of lines analyzed across all files.
          -   **`complexity_score`**: "LOW", "MEDIUM", or "HIGH".
          -   **`code_coverage_gaps`**: Array of areas needing test coverage.
          -   **`dependency_risks`**: Array of dependency-related risks.
@@ -121,7 +130,7 @@ Follow these instructions to populate the JSON fields:
 10. **`immediate_actions` (array of strings):** List critical items requiring immediate attention.
 
 **CRITICAL INSTRUCTION FOR LARGE REVIEWS:**
-Your entire response MUST be under 65,000 characters. If the number of findings is very large, you MUST prioritize.
+Your entire response MUST be under {MAX_CHARS_FOR_FINAL_SUMMARY_FILE} characters. If the number of findings is very large, you MUST prioritize.
 -   First, only include findings with **'Critical' and 'High' severity** in the `detailed_findings` array.
 -   If there is still not enough space, summarize the 'Medium' severity findings in the main `executive_summary` field instead of listing them individually.
 -   'Low' severity findings can be ignored if space is limited.
@@ -130,175 +139,122 @@ Here are the individual code reviews to process:
 {ALL_REVIEWS_CONTENT}
 """
 
-def build_prompt(code_text: str) -> str:
-    code_text = code_text[:MAX_CODE_CHARS]
-    return PROMPT_TEMPLATE.replace("{PY_CONTENT}", code_text)
+# Response format
+openai_response_format = {
+    "type": "json",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "executive_summary": {"type": "string"},
+            "quality_score": {"type": "number"},
+            "business_impact": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+            "technical_debt_score": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+            "security_risk_level": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]},
+            "maintainability_rating": {"type": "string", "enum": ["POOR", "FAIR", "GOOD", "EXCELLENT"]},
+            "detailed_findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "severity": {"type": "string", "enum": ["Low", "Medium", "High", "Critical"]},
+                        "category": {"type": "string"},
+                        "line_number": {"type": "string"},
+                        "function_context": {"type": "string"},
+                        "finding": {"type": "string"},
+                        "business_impact": {"type": "string"},
+                        "recommendation": {"type": "string"},
+                        "effort_estimate": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+                        "priority_ranking": {"type": "number"},
+                        "filename": {"type": "string"}
+                    }
+                }
+            },
+            "metrics": {
+                "type": "object",
+                "properties": {
+                    "lines_of_code": {"type": "number"},
+                    "complexity_score": {"type": "string"},
+                    "code_coverage_gaps": {"type": "array", "items": {"type": "string"}},
+                    "dependency_risks": {"type": "array", "items": {"type": "string"}}
+                }
+            },
+            "strategic_recommendations": {"type": "array", "items": {"type": "string"}},
+            "immediate_actions": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["executive_summary", "quality_score", "business_impact"]
+    }
+}
 
-# ---------------------
-# Enhanced Cortex call with better error handling
-# ---------------------
-def review_with_cortex(model: str, code_text: str) -> dict:
-    prompt = build_prompt(code_text)
-    clean_prompt = prompt.replace("'", "''").replace("\\", "\\\\")
-    
-    query = f"""
-        SELECT SNOWFLAKE.CORTEX.COMPLETE(
-            '{model}',
-            '{clean_prompt}'
-        ) as response
-    """
-    
+# Utility functions
+def count_tokens(text: str) -> int:
+    tokenizer = tiktoken.get_encoding("cl100k_base")
+    return len(tokenizer.encode(text))
+
+def truncate_by_tokens(text: str, max_tokens: int) -> str:
+    tokenizer = tiktoken.get_encoding("cl100k_base")
+    tokens = tokenizer.encode(text)
+    if len(tokens) > max_tokens:
+        print(f"Warning: Text exceeds {max_tokens} tokens ({len(tokens)}). Truncating.", file=sys.stderr)
+        return tokenizer.decode(tokens[:max_tokens])
+    return text
+
+def build_prompt_for_individual_review(code_text: str, filename: str = "code_file") -> str:
+    """Build PROMPT 1 for individual file review"""
+    prompt = PROMPT_TEMPLATE_INDIVIDUAL.replace("{PY_CONTENT}", code_text)
+    prompt = prompt.replace("{filename}", filename)
+    return prompt
+
+def build_prompt_for_consolidated_summary(all_reviews_content: str) -> str:
+    """Build PROMPT 2 for consolidation"""
+    all_reviews_content_truncated = truncate_by_tokens(all_reviews_content, MAX_TOKENS_FOR_SUMMARY_INPUT)
+    return PROMPT_TEMPLATE_CONSOLIDATED.replace("{ALL_REVIEWS_CONTENT}", all_reviews_content_truncated)
+
+def review_with_cortex(model, prompt_text: str, session, use_json_format=False) -> str:
+    """Call Cortex with optional JSON formatting"""
     try:
-        print(f"🔍 Analyzing code with {model}...")
-        df = session.sql(query)
-        result = df.collect()[0][0]
-        
-        print(f"📊 Processing LLM response...")
-        
-        try:
-            return json.loads(result)
-        except json.JSONDecodeError:
-            json_match = re.search(r'\{.*\}', result, re.DOTALL)
-            if json_match:
-                try:
-                    return json.loads(json_match.group())
-                except json.JSONDecodeError:
-                    pass
+        options = CompleteOptions(temperature=0)
+        if use_json_format:
+            options.response_format = openai_response_format
             
-            print("⚠️ Creating structured response from analysis...")
-            return parse_executive_response(result, code_text)
-            
+        review = complete(
+            model=model,
+            prompt=prompt_text,
+            session=session,
+            options=options
+        )
+        return review
     except Exception as e:
-        print(f"❌ Analysis error: {e}")
-        return create_executive_fallback(code_text, str(e))
+        print(f"Error calling Cortex complete for model '{model}': {e}", file=sys.stderr)
+        return f"ERROR: Could not get response from Cortex. Reason: {e}"
 
-# ---------------------
-# Parse response for executive format
-# ---------------------
-def parse_executive_response(response_text: str, code_text: str) -> dict:
+def chunk_large_file(code_text: str, max_chunk_size: int = 50000) -> list:
+    """Split large files into smaller chunks for processing"""
+    if len(code_text) <= max_chunk_size:
+        return [code_text]
+    
     lines = code_text.split('\n')
-    code_length = len(lines)
+    chunks = []
+    current_chunk = []
+    current_size = 0
     
-    findings = []
-    security_issues = []
-    performance_issues = []
-    maintainability_issues = []
+    for line in lines:
+        line_size = len(line) + 1  # +1 for newline
+        if current_size + line_size > max_chunk_size and current_chunk:
+            chunks.append('\n'.join(current_chunk))
+            current_chunk = [line]
+            current_size = line_size
+        else:
+            current_chunk.append(line)
+            current_size += line_size
     
-    for i, line in enumerate(lines, 1):
-        line_stripped = line.strip().lower()
-        
-        if any(keyword in line_stripped for keyword in ['password', 'secret', 'key', 'token']) and '=' in line_stripped:
-            security_issues.append({
-                "severity": "CRITICAL",
-                "category": "Security", 
-                "line_number": str(i),
-                "function_context": "authentication",
-                "finding": "Hardcoded credentials detected in source code",
-                "business_impact": "HIGH - Risk of credential exposure and unauthorized access",
-                "recommendation": "Implement secure credential management using environment variables or secure vault",
-                "effort_estimate": "MEDIUM",
-                "priority_ranking": 1
-            })
-        
-        if any(keyword in line_stripped for keyword in ['session.sql(', 'df.collect()']):
-            performance_issues.append({
-                "severity": "MEDIUM",
-                "category": "Performance",
-                "line_number": str(i), 
-                "function_context": "database_operations",
-                "finding": "Direct database query execution without optimization",
-                "business_impact": "MEDIUM - Potential performance bottlenecks affecting user experience",
-                "recommendation": "Implement query optimization, connection pooling, and caching strategies",
-                "effort_estimate": "HIGH",
-                "priority_ranking": 2
-            })
-        
-        if 'except:' in line_stripped or 'except exception:' in line_stripped:
-            maintainability_issues.append({
-                "severity": "HIGH",
-                "category": "Error Handling",
-                "line_number": str(i),
-                "function_context": "exception_handling",
-                "finding": "Generic exception handling reduces debugging capability",
-                "business_impact": "MEDIUM - Increased troubleshooting time and operational costs",
-                "recommendation": "Implement specific exception handling with proper logging and monitoring",
-                "effort_estimate": "LOW",
-                "priority_ranking": 3
-            })
+    if current_chunk:
+        chunks.append('\n'.join(current_chunk))
     
-    all_findings = security_issues + performance_issues + maintainability_issues
-    critical_count = len(security_issues)
-    high_count = len([f for f in all_findings if f["severity"] == "HIGH"])
-    
-    quality_score = max(30, 100 - (critical_count * 25) - (high_count * 10))
-    business_impact = "HIGH" if critical_count > 0 else ("MEDIUM" if high_count > 0 else "LOW")
-    security_risk = "CRITICAL" if critical_count > 2 else ("HIGH" if critical_count > 0 else "MEDIUM")
-    
-    return {
-        "executive_summary": f"Analysis of {code_length} lines reveals {len(all_findings)} technical concerns requiring attention. Primary risks identified in credential management and error handling patterns.",
-        "quality_score": quality_score,
-        "business_impact": business_impact,
-        "technical_debt_score": "MEDIUM" if len(all_findings) > 3 else "LOW",
-        "security_risk_level": security_risk,
-        "maintainability_rating": "FAIR" if len(all_findings) < 5 else "POOR",
-        "detailed_findings": all_findings[:10],
-        "metrics": {
-            "lines_of_code": code_length,
-            "complexity_score": "MEDIUM" if code_length > 100 else "LOW",
-            "code_coverage_gaps": ["error_handling", "input_validation"],
-            "dependency_risks": ["database_connection", "credential_management"]
-        },
-        "strategic_recommendations": [
-            "Implement comprehensive security review process for credential management",
-            "Establish code quality gates with automated security scanning",
-            "Create standardized error handling and logging framework"
-        ],
-        "immediate_actions": [
-            "Secure hardcoded credentials within 24 hours",
-            "Implement proper exception handling patterns",
-            "Add input validation for database operations"
-        ],
-        "raw_analysis": response_text
-    }
+    return chunks
 
-def create_executive_fallback(code_text: str, error_msg: str) -> dict:
-    lines = len(code_text.split('\n'))
+def format_executive_pr_display(json_response: dict, processed_files: list) -> str:
+    """Generate executive-level markdown with professional tables"""
     
-    return {
-        "executive_summary": f"Technical analysis of {lines} lines completed with system limitations. Manual review recommended for comprehensive assessment.",
-        "quality_score": 75,
-        "business_impact": "MEDIUM",
-        "technical_debt_score": "MEDIUM", 
-        "security_risk_level": "MEDIUM",
-        "maintainability_rating": "FAIR",
-        "detailed_findings": [{
-            "severity": "HIGH",
-            "category": "System",
-            "line_number": "1",
-            "function_context": "analysis_system",
-            "finding": f"Automated analysis system limitation: {error_msg}",
-            "business_impact": "MEDIUM - Requires manual technical review for complete assessment",
-            "recommendation": "Conduct manual code review by senior technical staff",
-            "effort_estimate": "HIGH",
-            "priority_ranking": 1
-        }],
-        "metrics": {
-            "lines_of_code": lines,
-            "complexity_score": "UNKNOWN",
-            "code_coverage_gaps": ["automated_analysis"],
-            "dependency_risks": ["system_connectivity"]
-        },
-        "strategic_recommendations": [
-            "Establish backup manual review processes",
-            "Investigate automated analysis system reliability"
-        ],
-        "immediate_actions": [
-            "Schedule manual code review session",
-            "Document analysis system limitations"
-        ]
-    }
-
-def format_executive_pr_display(json_response: dict) -> str:
     summary = json_response.get("executive_summary", "Technical analysis completed")
     findings = json_response.get("detailed_findings", [])
     quality_score = json_response.get("quality_score", 75)
@@ -310,19 +266,18 @@ def format_executive_pr_display(json_response: dict) -> str:
     strategic_recs = json_response.get("strategic_recommendations", [])
     immediate_actions = json_response.get("immediate_actions", [])
     
-    critical_count = sum(1 for f in findings if f.get("severity", "").upper() == "CRITICAL")
-    high_count = sum(1 for f in findings if f.get("severity", "").upper() == "HIGH")
-    medium_count = sum(1 for f in findings if f.get("severity", "").upper() == "MEDIUM")
+    # Count findings by severity
+    critical_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "CRITICAL")
+    high_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "HIGH")
+    medium_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "MEDIUM")
     
-    security_findings = [f for f in findings if f.get("category", "") == "Security"]
-    performance_findings = [f for f in findings if f.get("category", "") == "Performance"]
-    
+    # Risk indicators
     risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}
     quality_emoji = "🟢" if quality_score >= 80 else ("🟡" if quality_score >= 60 else "🔴")
     
     display_text = f"""# 📊 Executive Code Review Report
 
-**File:** `{FILE_TO_REVIEW}` | **Analysis Date:** {datetime.now().strftime('%Y-%m-%d')}
+**Files Analyzed:** {len(processed_files)} files | **Analysis Date:** {datetime.now().strftime('%Y-%m-%d')}
 
 ## 🎯 Executive Summary
 {summary}
@@ -332,20 +287,21 @@ def format_executive_pr_display(json_response: dict) -> str:
 | Metric | Score | Status | Business Impact |
 |--------|-------|--------|-----------------|
 | **Overall Quality** | {quality_score}/100 | {quality_emoji} | {business_impact} Risk |
-| **Security Risk** | {security_risk} | {risk_emoji.get(security_risk, "🟡")} | {len(security_findings)} vulnerabilities |
+| **Security Risk** | {security_risk} | {risk_emoji.get(security_risk, "🟡")} | Critical security concerns |
 | **Technical Debt** | {tech_debt} | {risk_emoji.get(tech_debt, "🟡")} | {len(findings)} items |
 | **Maintainability** | {maintainability} | {risk_emoji.get(maintainability, "🟡")} | Long-term sustainability |
 
 ## 🔍 Issue Distribution
 
-| Severity | Count | Category Breakdown | Priority Actions |
-|----------|-------|-------------------|------------------|
-| 🔴 Critical | {critical_count} | Security: {len([f for f in findings if f.get("severity") == "CRITICAL" and f.get("category") == "Security"])} | Immediate fix required |
-| 🟠 High | {high_count} | Performance: {len([f for f in findings if f.get("severity") == "HIGH" and f.get("category") == "Performance"])} | Fix within sprint |
-| 🟡 Medium | {medium_count} | Quality: {len([f for f in findings if f.get("severity") == "MEDIUM"])} | Plan for next release |
+| Severity | Count | Priority Actions |
+|----------|-------|------------------|
+| 🔴 Critical | {critical_count} | Immediate fix required |
+| 🟠 High | {high_count} | Fix within sprint |
+| 🟡 Medium | {medium_count} | Plan for next release |
 
 """
 
+    # Technical Metrics
     if metrics:
         loc = metrics.get("lines_of_code", "N/A")
         complexity = metrics.get("complexity_score", "N/A")
@@ -354,657 +310,252 @@ def format_executive_pr_display(json_response: dict) -> str:
         
         display_text += f"""## 📊 Technical Metrics
 
-| Metric | Value | Assessment | Recommendation |
-|--------|-------|------------|----------------|
-| **Lines of Code** | {loc} | {'🟢 Manageable' if isinstance(loc, int) and loc < 200 else '🟡 Monitor'} | {'Good size' if isinstance(loc, int) and loc < 200 else 'Consider refactoring'} |
-| **Complexity** | {complexity} | {risk_emoji.get(complexity, "🟡")} | {'Acceptable' if complexity == 'LOW' else 'Review architecture'} |
-| **Coverage Gaps** | {coverage_gaps} areas | {'🟢 Good' if coverage_gaps < 3 else '🟡 Needs attention'} | {'Maintain current' if coverage_gaps < 3 else 'Increase test coverage'} |
-| **Dependency Risks** | {dep_risks} items | {'🟢 Low risk' if dep_risks < 3 else '🟡 Monitor'} | {'Current approach OK' if dep_risks < 3 else 'Review dependencies'} |
+| Metric | Value | Assessment |
+|--------|-------|------------|
+| **Lines of Code** | {loc} | {'🟢 Manageable' if isinstance(loc, int) and loc < 500 else '🟡 Monitor'} |
+| **Complexity** | {complexity} | {risk_emoji.get(complexity, "🟡")} |
+| **Coverage Gaps** | {coverage_gaps} areas | {'🟢 Good' if coverage_gaps < 3 else '🟡 Needs attention'} |
+| **Dependency Risks** | {dep_risks} items | {'🟢 Low risk' if dep_risks < 3 else '🟡 Monitor'} |
 
 """
 
+    # Detailed Findings
     if findings:
         display_text += """<details>
 <summary><strong>🔍 Detailed Technical Findings</strong> (Click to expand)</summary>
 
-| Priority | Category | Line | Issue | Business Impact | Effort |
-|----------|----------|------|-------|-----------------|--------|
+| Priority | File | Line | Issue | Business Impact |
+|----------|------|------|-------|-----------------|
 """
         
-        sorted_findings = sorted(findings, key=lambda x: (
-            x.get("priority_ranking", 999),
-            {"CRITICAL": 1, "HIGH": 2, "MEDIUM": 3, "LOW": 4}.get(x.get("severity", "LOW"), 4)
-        ))
+        severity_order = {"Critical": 1, "High": 2, "Medium": 3, "Low": 4}
+        sorted_findings = sorted(findings, key=lambda x: severity_order.get(str(x.get("severity", "Low")), 4))
         
         for finding in sorted_findings[:15]:
-            severity = finding.get("severity", "MEDIUM")
-            category = finding.get("category", "General")
+            severity = str(finding.get("severity", "Medium"))
+            filename = finding.get("filename", "N/A")
             line = finding.get("line_number", "N/A")
-            issue = finding.get("finding", "")[:80] + ("..." if len(finding.get("finding", "")) > 80 else "")
-            business_impact_text = finding.get("business_impact", "")[:60] + ("..." if len(finding.get("business_impact", "")) > 60 else "")
-            effort = finding.get("effort_estimate", "MEDIUM")
+            issue = str(finding.get("finding", ""))[:100] + ("..." if len(str(finding.get("finding", ""))) > 100 else "")
+            business_impact_text = str(finding.get("business_impact", ""))[:80] + ("..." if len(str(finding.get("business_impact", ""))) > 80 else "")
             
-            priority_emoji = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(severity, "🟡")
-            effort_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}.get(effort, "🟡")
+            priority_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(severity, "🟡")
             
-            display_text += f"| {priority_emoji} {severity} | {category} | {line} | {issue} | {business_impact_text} | {effort_emoji} {effort} |\n"
+            display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue} | {business_impact_text} |\n"
         
         display_text += "\n</details>\n\n"
 
+    # Strategic Recommendations
     if strategic_recs:
         display_text += """## 🎯 Strategic Recommendations
 
 <details>
 <summary><strong>💡 Leadership Actions</strong> (Click to expand)</summary>
 
-| Priority | Recommendation | Expected Outcome | Timeline |
-|----------|----------------|------------------|----------|
 """
         for i, rec in enumerate(strategic_recs, 1):
-            priority = "🔴 High" if i <= 2 else "🟡 Medium"
-            timeline = "2-4 weeks" if i <= 2 else "1-2 months"
-            outcome = "Risk reduction" if "security" in rec.lower() or "risk" in rec.lower() else "Quality improvement"
-            
-            display_text += f"| {priority} | {rec} | {outcome} | {timeline} |\n"
-        
+            display_text += f"{i}. {rec}\n"
         display_text += "\n</details>\n\n"
 
+    # Immediate Actions
     if immediate_actions:
         display_text += """## ⚡ Immediate Actions Required
 
 <details>
 <summary><strong>🚨 Critical Tasks</strong> (Click to expand)</summary>
 
-| Urgency | Action | Owner | Due Date |
-|---------|--------|-------|----------|
 """
         for i, action in enumerate(immediate_actions, 1):
-            urgency = "🔴 Critical" if "24 hours" in action or "immediate" in action.lower() else "🟠 High"
-            owner = "Security Team" if "credential" in action.lower() or "security" in action.lower() else "Dev Team"
-            due_date = "24 hours" if "24 hours" in action else "End of sprint"
-            
-            display_text += f"| {urgency} | {action} | {owner} | {due_date} |\n"
-        
+            display_text += f"{i}. {action}\n"
         display_text += "\n</details>\n\n"
 
     display_text += f"""---
 
 **📋 Review Summary:** {len(findings)} findings identified | **🎯 Quality Score:** {quality_score}/100 | **⚡ Critical Issues:** {critical_count}
 
-*🔬 Powered by Snowflake Cortex AI • Executive Technical Analysis*"""
+*🔬 Powered by Snowflake Cortex AI • Two-Stage Executive Analysis*"""
 
     return display_text
 
-def generate_executive_html_report(json_response: dict) -> str:
-    findings = json_response.get("detailed_findings", [])
-    quality_score = json_response.get("quality_score", 75)
-    business_impact = json_response.get("business_impact", "MEDIUM")
-    security_risk = json_response.get("security_risk_level", "MEDIUM")
-    tech_debt = json_response.get("technical_debt_score", "MEDIUM") 
-    maintainability = json_response.get("maintainability_rating", "FAIR")
-    summary = json_response.get("executive_summary", "Analysis completed")
-    
-    critical_count = sum(1 for f in findings if f.get("severity", "").upper() == "CRITICAL")
-    high_count = sum(1 for f in findings if f.get("severity", "").upper() == "HIGH")
-    medium_count = sum(1 for f in findings if f.get("severity", "").upper() == "MEDIUM")
-    total_count = len(findings)
-    
-    quality_color = "#28a745" if quality_score >= 80 else ("#ffc107" if quality_score >= 60 else "#dc3545")
-    risk_colors = {"LOW": "#28a745", "MEDIUM": "#ffc107", "HIGH": "#fd7e14", "CRITICAL": "#dc3545"}
-    
-    if findings:
-        sorted_findings = sorted(findings, key=lambda x: (
-            x.get("priority_ranking", 999),
-            {"CRITICAL": 1, "HIGH": 2, "MEDIUM": 3, "LOW": 4}.get(x.get("severity", "LOW"), 4)
-        ))[:15]
-        
-        findings_html = """
-            <table class="findings-table">
-                <thead>
-                    <tr>
-                        <th>Priority</th>
-                        <th>Category</th>
-                        <th>Line</th>
-                        <th>Technical Issue</th>
-                        <th>Business Impact</th>
-                        <th>Effort</th>
-                    </tr>
-                </thead>
-                <tbody>
-        """
-        
-        for f in sorted_findings:
-            severity = f.get("severity", "MEDIUM").upper()
-            category = f.get("category", "General")
-            line_num = f.get("line_number", "N/A")
-            finding = f.get("finding", "No description")
-            business_impact_text = f.get("business_impact", "")
-            effort = f.get("effort_estimate", "MEDIUM").upper()
-            
-            finding_text = finding[:100] + ("..." if len(finding) > 100 else "")
-            impact_text = business_impact_text[:80] + ("..." if len(business_impact_text) > 80 else "")
-            
-            effort_icon = "clock" if effort == "LOW" else ("hourglass-half" if effort == "MEDIUM" else "hourglass-end")
-            
-            findings_html += f"""
-                    <tr>
-                        <td><span class="severity-badge severity-{severity.lower()}">{severity}</span></td>
-                        <td><span class="category-tag">{category}</span></td>
-                        <td><strong>{line_num}</strong></td>
-                        <td>{finding_text}</td>
-                        <td>{impact_text}</td>
-                        <td><span class="effort-indicator effort-{effort.lower()}"><i class="fas fa-{effort_icon}"></i> {effort}</span></td>
-                    </tr>
-            """
-        
-        findings_html += """
-                </tbody>
-            </table>
-        """
+# ---------------------
+# Main Logic - Ensures BOTH prompts are always used
+# ---------------------
+def main():
+    # Determine if running in directory mode or single file mode
+    if len(sys.argv) >= 5:
+        # Directory mode (from GitHub Actions)
+        folder_path = sys.argv[1]
+        output_folder_path = sys.argv[2]
+        pull_request_number = int(sys.argv[3])
+        commit_sha = sys.argv[4]
+        directory_mode = True
     else:
-        findings_html = """
-            <div class="no-issues">
-                <i class="fas fa-check-circle checkmark"></i>
-                No technical issues identified.<br/>
-                <small style="color: #6c757d; margin-top: 10px;">Excellent code quality maintained!</small>
-            </div>
-        """
-    
-    html_content = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Executive Code Review - {os.path.basename(FILE_TO_REVIEW)}</title>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        
-        body {{ 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif; 
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); 
-            color: #343a40; 
-            min-height: 100vh;
-            padding: 20px;
-        }}
-        
-        .container {{ 
-            max-width: 1400px; 
-            margin: 0 auto; 
-            background: white; 
-            border-radius: 16px; 
-            box-shadow: 0 25px 50px rgba(0,0,0,0.15);
-            overflow: hidden;
-        }}
-        
-        .executive-header {{ 
-            padding: 40px 50px; 
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); 
-            color: white; 
-        }}
-        
-        .header-title {{
-            font-size: 2.5em;
-            font-weight: 700;
-            margin-bottom: 10px;
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }}
-        
-        .header-subtitle {{
-            font-size: 1.2em;
-            opacity: 0.9;
-            margin-bottom: 20px;
-        }}
-        
-        .header-meta {{
-            display: flex;
-            gap: 30px;
-            font-size: 0.95em;
-            opacity: 0.8;
-        }}
-        
-        .kpi-dashboard {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 0;
-            background: #f8f9fa;
-        }}
-        
-        .kpi-card {{
-            padding: 40px 30px;
-            text-align: center;
-            border-right: 1px solid #dee2e6;
-            transition: all 0.3s ease;
-        }}
-        
-        .kpi-card:last-child {{ border-right: none; }}
-        
-        .kpi-card:hover {{
-            background: white;
-            transform: translateY(-2px);
-            box-shadow: 0 8px 25px rgba(0,0,0,0.1);
-        }}
-        
-        .kpi-icon {{
-            font-size: 2.5em;
-            margin-bottom: 15px;
-            opacity: 0.8;
-        }}
-        
-        .kpi-value {{
-            font-size: 3em;
-            font-weight: bold;
-            margin-bottom: 10px;
-            line-height: 1;
-        }}
-        
-        .kpi-label {{
-            font-size: 1.1em;
-            color: #6c757d;
-            font-weight: 600;
-            margin-bottom: 5px;
-        }}
-        
-        .kpi-status {{
-            font-size: 0.9em;
-            font-weight: 500;
-            padding: 4px 12px;
-            border-radius: 20px;
-            display: inline-block;
-        }}
-        
-        .status-excellent {{ background: #d4edda; color: #155724; }}
-        .status-good {{ background: #d1ecf1; color: #0c5460; }}
-        .status-fair {{ background: #fff3cd; color: #856404; }}
-        .status-poor {{ background: #f8d7da; color: #721c24; }}
-        .status-critical {{ background: #f8d7da; color: #721c24; }}
-        .status-high {{ background: #fff3cd; color: #856404; }}
-        .status-medium {{ background: #d1ecf1; color: #0c5460; }}
-        .status-low {{ background: #d4edda; color: #155724; }}
-        
-        .executive-summary {{
-            padding: 40px 50px;
-            background: white;
-            border-bottom: 1px solid #dee2e6;
-        }}
-        
-        .summary-title {{
-            font-size: 1.6em;
-            font-weight: 600;
-            margin-bottom: 20px;
-            color: #495057;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }}
-        
-        .summary-text {{
-            font-size: 1.15em;
-            line-height: 1.7;
-            color: #6c757d;
-            background: #f8f9fa;
-            padding: 25px;
-            border-radius: 8px;
-            border-left: 4px solid #007bff;
-        }}
-        
-        .findings-section {{
-            padding: 40px 50px;
-        }}
-        
-        .section-title {{
-            font-size: 1.8em;
-            font-weight: 600;
-            margin-bottom: 30px;
-            color: #495057;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }}
-        
-        .findings-table {{
-            width: 100%;
-            border-collapse: collapse;
-            background: white;
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        }}
-        
-        .findings-table th {{
-            background: linear-gradient(135deg, #495057, #6c757d);
-            color: white;
-            padding: 20px 15px;
-            text-align: left;
-            font-weight: 600;
-            font-size: 0.95em;
-        }}
-        
-        .findings-table td {{
-            padding: 18px 15px;
-            border-bottom: 1px solid #dee2e6;
-            vertical-align: top;
-        }}
-        
-        .findings-table tr:hover {{
-            background: #f8f9fa;
-        }}
-        
-        .severity-badge {{
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-size: 0.85em;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }}
-        
-        .severity-critical {{
-            background: linear-gradient(135deg, #dc3545, #c82333);
-            color: white;
-        }}
-        
-        .severity-high {{
-            background: linear-gradient(135deg, #fd7e14, #e55a00);
-            color: white;
-        }}
-        
-        .severity-medium {{
-            background: linear-gradient(135deg, #ffc107, #e0a800);
-            color: #212529;
-        }}
-        
-        .severity-low {{
-            background: linear-gradient(135deg, #28a745, #1e7e34);
-            color: white;
-        }}
-        
-        .category-tag {{
-            background: #e9ecef;
-            color: #495057;
-            padding: 4px 10px;
-            border-radius: 12px;
-            font-size: 0.8em;
-            font-weight: 500;
-        }}
-        
-        .effort-indicator {{
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            font-size: 0.9em;
-            font-weight: 500;
-        }}
-        
-        .effort-low {{ color: #28a745; }}
-        .effort-medium {{ color: #ffc107; }}
-        .effort-high {{ color: #dc3545; }}
-        
-        .no-issues {{
-            text-align: center;
-            padding: 80px 20px;
-            color: #28a745;
-            font-size: 1.3em;
-        }}
-        
-        .no-issues .checkmark {{
-            font-size: 4em;
-            margin-bottom: 20px;
-            display: block;
-        }}
-        
-        .footer {{
-            padding: 30px 50px;
-            text-align: center;
-            background: linear-gradient(135deg, #495057, #6c757d);
-            color: white;
-        }}
-        
-        .footer-content {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 20px;
-        }}
-        
-        .footer-left {{
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }}
-        
-        .footer-right {{
-            font-size: 0.9em;
-            opacity: 0.8;
-        }}
-        
-        @media (max-width: 768px) {{
-            .container {{ margin: 10px; }}
-            .executive-header, .executive-summary, .findings-section {{
-                padding: 20px 25px;
-            }}
-            .kpi-dashboard {{ grid-template-columns: repeat(2, 1fr); }}
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="executive-header">
-            <div class="header-content">
-                <h1 class="header-title">
-                    <i class="fas fa-chart-line"></i>
-                    Executive Code Review
-                </h1>
-                <div class="header-subtitle">Strategic Technical Assessment & Risk Analysis</div>
-                <div class="header-meta">
-                    <div><i class="fas fa-file-code"></i> {os.path.basename(FILE_TO_REVIEW)}</div>
-                    <div><i class="fas fa-calendar"></i> {datetime.now().strftime('%B %d, %Y')}</div>
-                    <div><i class="fas fa-clock"></i> {datetime.now().strftime('%H:%M UTC')}</div>
-                </div>
-            </div>
-        </div>
-        
-        <div class="kpi-dashboard">
-            <div class="kpi-card">
-                <div class="kpi-icon" style="color: {quality_color};">
-                    <i class="fas fa-gauge-high"></i>
-                </div>
-                <div class="kpi-value" style="color: {quality_color};">{quality_score}</div>
-                <div class="kpi-label">Quality Score</div>
-                <div class="kpi-status status-{'excellent' if quality_score >= 80 else ('good' if quality_score >= 60 else 'fair')}">
-                    {'Excellent' if quality_score >= 80 else ('Good' if quality_score >= 60 else 'Needs Improvement')}
-                </div>
-            </div>
-            
-            <div class="kpi-card">
-                <div class="kpi-icon" style="color: {risk_colors.get(business_impact, '#ffc107')};">
-                    <i class="fas fa-exclamation-triangle"></i>
-                </div>
-                <div class="kpi-value" style="color: {risk_colors.get(business_impact, '#ffc107')};">{business_impact}</div>
-                <div class="kpi-label">Business Risk</div>
-                <div class="kpi-status status-{business_impact.lower()}">{business_impact} Impact</div>
-            </div>
-            
-            <div class="kpi-card">
-                <div class="kpi-icon" style="color: {risk_colors.get(security_risk, '#ffc107')};">
-                    <i class="fas fa-shield-alt"></i>
-                </div>
-                <div class="kpi-value" style="color: {risk_colors.get(security_risk, '#ffc107')};">{security_risk}</div>
-                <div class="kpi-label">Security Risk</div>
-                <div class="kpi-status status-{security_risk.lower()}">{security_risk} Risk</div>
-            </div>
-            
-            <div class="kpi-card">
-                <div class="kpi-icon" style="color: {risk_colors.get(tech_debt, '#ffc107')};">
-                    <i class="fas fa-tools"></i>
-                </div>
-                <div class="kpi-value" style="color: {risk_colors.get(tech_debt, '#ffc107')};">{maintainability}</div>
-                <div class="kpi-label">Maintainability</div>
-                <div class="kpi-status status-{maintainability.lower()}">{maintainability}</div>
-            </div>
-        </div>
-        
-        <div class="executive-summary">
-            <h2 class="summary-title">
-                <i class="fas fa-clipboard-list"></i>
-                Executive Summary
-            </h2>
-            <div class="summary-text">{summary}</div>
-        </div>
-        
-        <div class="findings-section">
-            <h2 class="section-title">
-                <i class="fas fa-search"></i>
-                Detailed Technical Findings
-            </h2>
-            {findings_html}
-        </div>
-        
-        <div class="footer">
-            <div class="footer-content">
-                <div class="footer-left">
-                    <i class="fas fa-brain"></i>
-                    <strong>Powered by Snowflake Cortex AI</strong>
-                    <span style="opacity: 0.8;">| Executive Technical Analysis</span>
-                </div>
-                <div class="footer-right">
-                    Report ID: {datetime.now().strftime('%Y%m%d_%H%M%S')} | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
-                </div>
-            </div>
-        </div>
-    </div>
-</body>
-</html>"""
-    
-    return html_content
+        # Single file mode (for testing)
+        folder_path = None
+        output_folder_path = "output_reviews"
+        pull_request_number = 0
+        commit_sha = "test"
+        directory_mode = False
+        print(f"Running in single-file mode with: {FILE_TO_REVIEW}")
 
-def filter_low_severity(json_response: dict) -> dict:
-    filtered = json_response.copy()
-    if "detailed_findings" in filtered:
-        all_findings = filtered["detailed_findings"]
-        sorted_findings = sorted(all_findings, key=lambda x: (
-            x.get("priority_ranking", 999),
-            {"CRITICAL": 1, "HIGH": 2, "MEDIUM": 3, "LOW": 4}.get(x.get("severity", "LOW"), 4)
-        ))
-        filtered["detailed_findings"] = sorted_findings[:20]
-    return filtered
+    # Setup output directory
+    if os.path.exists(output_folder_path):
+        import shutil
+        shutil.rmtree(output_folder_path)
+    os.makedirs(output_folder_path, exist_ok=True)
 
-def extract_critical_findings(json_response: dict) -> list:
-    findings = []
-    for f in json_response.get("detailed_findings", []):
-        if f.get("severity", "").upper() == "CRITICAL" and f.get("line_number"):
-            findings.append({
-                "line": int(f["line_number"]) if str(f["line_number"]).isdigit() else 1,
-                "issue": f.get("finding", ""),
-                "recommendation": f.get("recommendation", ""),
-                "severity": "CRITICAL",
-                "business_impact": f.get("business_impact", ""),
-                "category": f.get("category", "General")
+    all_individual_reviews = []
+    processed_files = []
+
+    # STAGE 1: Individual File Reviews (PROMPT 1)
+    print("\n🔍 STAGE 1: Individual File Analysis...")
+    print("=" * 60)
+    
+    if directory_mode:
+        # Process directory of files
+        files_to_process = [f for f in os.listdir(folder_path) if f.endswith((".py", ".sql"))]
+    else:
+        # Process single file
+        if not os.path.exists(FILE_TO_REVIEW):
+            print(f"❌ File {FILE_TO_REVIEW} not found")
+            return
+        files_to_process = [FILE_TO_REVIEW]
+        folder_path = os.path.dirname(FILE_TO_REVIEW)
+
+    for filename in files_to_process:
+        if directory_mode:
+            file_path = os.path.join(folder_path, filename)
+        else:
+            file_path = filename
+            filename = os.path.basename(filename)
+            
+        print(f"\n--- Reviewing file: {filename} ---")
+        processed_files.append(filename)
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                code_content = f.read()
+
+            if not code_content.strip():
+                review_text = "No code found in file, skipping review."
+            else:
+                # Check if file is too large and needs chunking
+                chunks = chunk_large_file(code_content)
+                print(f"  File split into {len(chunks)} chunk(s)")
+                
+                chunk_reviews = []
+                for i, chunk in enumerate(chunks):
+                    chunk_name = f"{filename}_chunk_{i+1}" if len(chunks) > 1 else filename
+                    print(f"  Processing chunk: {chunk_name}")
+                    
+                    # PROMPT 1: Individual review
+                    individual_prompt = build_prompt_for_individual_review(chunk, chunk_name)
+                    review_text = review_with_cortex(MODEL, individual_prompt, session, use_json_format=False)
+                    chunk_reviews.append(review_text)
+                
+                # Combine chunk reviews if multiple
+                if len(chunk_reviews) > 1:
+                    review_text = "\n\n".join([f"## Chunk {i+1}\n{review}" for i, review in enumerate(chunk_reviews)])
+                else:
+                    review_text = chunk_reviews[0]
+
+            all_individual_reviews.append({
+                "filename": filename,
+                "review_feedback": review_text
             })
-    return findings
+
+            # Save individual review
+            output_filename = f"{Path(filename).stem}_individual_review.md"
+            output_file_path = os.path.join(output_folder_path, output_filename)
+            with open(output_file_path, 'w', encoding='utf-8') as outfile:
+                outfile.write(review_text)
+            print(f"  ✅ Individual review saved: {output_filename}")
+
+        except Exception as e:
+            print(f"  ❌ Error processing {filename}: {e}")
+            all_individual_reviews.append({
+                "filename": filename,
+                "review_feedback": f"ERROR: Could not generate review. Reason: {e}"
+            })
+
+    # STAGE 2: Consolidation (PROMPT 2) - ALWAYS RUNS
+    print(f"\n🔄 STAGE 2: Executive Consolidation...")
+    print("=" * 60)
+    print(f"Consolidating {len(all_individual_reviews)} individual reviews...")
+
+    if not all_individual_reviews:
+        print("❌ No reviews to consolidate")
+        return
+
+    try:
+        # Prepare data for PROMPT 2
+        combined_reviews_json = json.dumps(all_individual_reviews, indent=2)
+        print(f"  Combined reviews: {len(combined_reviews_json)} characters")
+
+        # PROMPT 2: Consolidation
+        consolidation_prompt = build_prompt_for_consolidated_summary(combined_reviews_json)
+        consolidated_raw = review_with_cortex(MODEL, consolidation_prompt, session, use_json_format=True)
+        
+        # Parse consolidated result
+        try:
+            consolidated_json = json.loads(consolidated_raw)
+            print("  ✅ Successfully parsed consolidated JSON response")
+        except json.JSONDecodeError as e:
+            print(f"  ⚠️ JSON parsing failed: {e}")
+            # Fallback parsing
+            json_match = re.search(r'\{.*\}', consolidated_raw, re.DOTALL)
+            if json_match:
+                consolidated_json = json.loads(json_match.group())
+            else:
+                consolidated_json = {
+                    "executive_summary": "Consolidation failed - using fallback",
+                    "quality_score": 75,
+                    "business_impact": "MEDIUM",
+                    "detailed_findings": [],
+                    "strategic_recommendations": [],
+                    "immediate_actions": []
+                }
+
+        # Generate executive-formatted output
+        executive_summary = format_executive_pr_display(consolidated_json, processed_files)
+        
+        # Save consolidated results
+        consolidated_path = os.path.join(output_folder_path, "consolidated_executive_summary.md")
+        with open(consolidated_path, 'w', encoding='utf-8') as f:
+            f.write(executive_summary)
+        print(f"  ✅ Executive summary saved: consolidated_executive_summary.md")
+
+        # Save raw JSON for debugging
+        json_path = os.path.join(output_folder_path, "consolidated_data.json")
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(consolidated_json, f, indent=2)
+
+        # GitHub Actions output
+        if 'GITHUB_OUTPUT' in os.environ:
+            delimiter = str(uuid.uuid4())
+            with open(os.environ['GITHUB_OUTPUT'], 'a') as gh_out:
+                gh_out.write(f'consolidated_summary_text<<{delimiter}\n')
+                gh_out.write(f'{executive_summary}\n')
+                gh_out.write(f'{delimiter}\n')
+            print("  ✅ GitHub Actions output written")
+
+        # Summary
+        print(f"\n🎉 TWO-STAGE ANALYSIS COMPLETED!")
+        print("=" * 60)
+        print(f"📁 Files processed: {len(processed_files)}")
+        print(f"🔍 Individual reviews: {len(all_individual_reviews)} (PROMPT 1)")
+        print(f"📊 Executive summary: 1 (PROMPT 2)")
+        print(f"🎯 Quality Score: {consolidated_json.get('quality_score', 'N/A')}/100")
+        print(f"📈 Findings: {len(consolidated_json.get('detailed_findings', []))}")
+        
+    except Exception as e:
+        print(f"❌ Consolidation error: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     try:
-        print("🚀 Starting Executive Code Review Analysis...")
-        print("="*60)
-        
-        if not os.path.exists(FILE_TO_REVIEW):
-            print(f"❌ File {FILE_TO_REVIEW} not found")
-            exit(1)
-            
-        print(f"📖 Reading file: {FILE_TO_REVIEW}")
-        code_text = Path(FILE_TO_REVIEW).read_text()
-        print(f"📝 Code length: {len(code_text)} characters ({len(code_text.split())} lines)")
-        
-        report = review_with_cortex(MODEL, code_text)
-        print(f"📋 Analysis completed - Report sections: {list(report.keys())}")
-        
-        original_findings = report.get("detailed_findings", [])
-        quality_score = report.get("quality_score", 75)
-        print(f"🎯 Quality Score: {quality_score}/100")
-        print(f"🔍 Found {len(original_findings)} total findings")
-        
-        filtered = filter_low_severity(report)
-        filtered_findings = filtered.get("detailed_findings", [])
-        print(f"📊 Executive summary: {len(filtered_findings)} key findings")
-        
-        criticals = extract_critical_findings(filtered)
-        print(f"🚨 Critical issues requiring immediate attention: {len(criticals)}")
-
-        print("\n📄 Generating executive reports...")
-        formatted_review = format_executive_pr_display(filtered)
-        html_report = generate_executive_html_report(filtered)
-        
-        print("💾 Saving report files...")
-        with open("executive_code_review_report.html", "w", encoding='utf-8') as f: 
-            f.write(html_report)
-        
-        output_data = {
-            "full_review": formatted_review,              
-            "full_review_markdown": formatted_review,     
-            "full_review_json": filtered,                 
-            "criticals": criticals,
-            "executive_summary": {
-                "quality_score": quality_score,
-                "business_impact": report.get("business_impact", "MEDIUM"),
-                "security_risk_level": report.get("security_risk_level", "MEDIUM"),
-                "total_findings": len(filtered_findings),
-                "critical_count": len(criticals)
-            },
-            "file": FILE_TO_REVIEW,
-            "interactive_report_path": "executive_code_review_report.html",
-            "timestamp": datetime.now().isoformat(),
-            "report_version": "Executive_v2.0"
-        }
-        
-        with open("executive_review_output.json", "w", encoding='utf-8') as f: 
-            json.dump(output_data, f, indent=2, ensure_ascii=False)
-            
-        with open("review_output.json", "w", encoding='utf-8') as f: 
-            json.dump(output_data, f, indent=2, ensure_ascii=False)
-
-        print("\n" + "="*70)
-        print("✅ EXECUTIVE CODE REVIEW COMPLETED")
-        print("="*70)
-        print(f"📁 File Analyzed: {FILE_TO_REVIEW}")
-        print(f"🎯 Overall Quality Score: {quality_score}/100")
-        print(f"📊 Business Risk Level: {report.get('business_impact', 'MEDIUM')}")
-        print(f"🔒 Security Risk: {report.get('security_risk_level', 'MEDIUM')}")
-        print(f"🔧 Maintainability: {report.get('maintainability_rating', 'FAIR')}")
-        
-        if filtered_findings:
-            critical_count = sum(1 for f in filtered_findings if f.get("severity", "").upper() == "CRITICAL")
-            high_count = sum(1 for f in filtered_findings if f.get("severity", "").upper() == "HIGH") 
-            medium_count = sum(1 for f in filtered_findings if f.get("severity", "").upper() == "MEDIUM")
-            
-            print(f"\n📈 Issue Distribution:")
-            print(f"  🔴 Critical: {critical_count} (Immediate action required)")
-            print(f"  🟠 High: {high_count} (Fix within sprint)")
-            print(f"  🟡 Medium: {medium_count} (Plan for next release)")
-        
-        print(f"\n📋 Reports Generated:")
-        print(f"  • review_output.json (inline_comment.py compatibility)")
-        print(f"  • executive_review_output.json (enhanced executive data)")
-        print(f"  • executive_code_review_report.html (interactive dashboard)")
-        
-        print(f"\n🌐 Next Steps:")
-        print(f"  1. Open executive_code_review_report.html for detailed analysis")
-        print(f"  2. Review immediate actions for critical issues")
-        print(f"  3. Share executive summary with technical leadership")
-        
-        if len(criticals) > 0:
-            print(f"\n⚠️  ATTENTION: {len(criticals)} critical issues require immediate attention!")
-        else:
-            print(f"\n✅ No critical issues found - excellent code quality!")
-        
-    except Exception as e:
-        print(f"❌ Executive analysis error: {e}")
-        import traceback
-        traceback.print_exc()
+        main()
     finally:
         if 'session' in locals():
             session.close()
-            print("\n🔒 Analysis session completed")
+            print("\n🔒 Session closed")
