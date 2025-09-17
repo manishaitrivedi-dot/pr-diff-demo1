@@ -436,467 +436,308 @@ def generate_executive_html_report(json_response: dict) -> str:
     quality_color = "#28a745" if quality_score >= 80 else ("#ffc107" if quality_score >= 60 else "#dc3545")
     risk_colors = {"LOW": "#28a745", "MEDIUM": "#ffc107", "HIGH": "#fd7e14", "CRITICAL": "#dc3545"}
     
-    html_content = f"""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Executive Code Review - {os.path.basename(FILE_TO_REVIEW)}</title>
-        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-        <style>
-            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-            
-            body {{ 
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif; 
-                background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); 
-                color: #343a40; 
-                min-height: 100vh;
-                padding: 20px;
-            }}
-            
-            .container {{ 
-                max-width: 1400px; 
-                margin: 0 auto; 
-                background: white; 
-                border-radius: 16px; 
-                box-shadow: 0 25px 50px rgba(0,0,0,0.15);
-                overflow: hidden;
-            }}
-            
-            .executive-header {{ 
-                padding: 40px 50px; 
-                background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); 
-                color: white; 
-                position: relative;
-                overflow: hidden;
-            }}
-            
-            .executive-header::before {{
-                content: '';
-                position: absolute;
-                top: 0;
-                right: 0;
-                width: 200px;
-                height: 200px;
-                background: rgba(255,255,255,0.1);
-                border-radius: 50%;
-                transform: translate(50px, -50px);
-            }}
-            
-            .header-content {{
-                position: relative;
-                z-index: 1;
-            }}
-            
-            .header-title {{
-                font-size: 2.5em;
-                font-weight: 700;
-                margin-bottom: 10px;
-                display: flex;
-                align-items: center;
-                gap: 15px;
-            }}
-            
-            .header-subtitle {{
-                font-size: 1.2em;
-                opacity: 0.9;
-                margin-bottom: 20px;
-            }}
-            
-            .header-meta {{
-                display: flex;
-                gap: 30px;
-                font-size: 0.95em;
-                opacity: 0.8;
-            }}
-            
-            .kpi-dashboard {{
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-                gap: 0;
-                background: #f8f9fa;
-            }}
-            
-            .kpi-card {{
-                padding: 40px 30px;
-                text-align: center;
-                border-right: 1px solid #dee2e6;
-                position: relative;
-                transition: all 0.3s ease;
-            }}
-            
-            .kpi-card:last-child {{ border-right: none; }}
-            
-            .kpi-card:hover {{
-                background: white;
-                transform: translateY(-2px);
-                box-shadow: 0 8px 25px rgba(0,0,0,0.1);
-            }}
-            
-            .kpi-icon {{
-                font-size: 2.5em;
-                margin-bottom: 15px;
-                opacity: 0.8;
-            }}
-            
-            .kpi-value {{
-                font-size: 3em;
-                font-weight: bold;
-                margin-bottom: 10px;
-                line-height: 1;
-            }}
-            
-            .kpi-label {{
-                font-size: 1.1em;
-                color: #6c757d;
-                font-weight: 600;
-                margin-bottom: 5px;
-            }}
-            
-            .kpi-status {{
-                font-size: 0.9em;
-                font-weight: 500;
-                padding: 4px 12px;
-                border-radius: 20px;
-                display: inline-block;
-            }}
-            
-            .status-critical {{ background: #f8d7da; color: #721c24; }}
-            .status-high {{ background: #fff3cd; color: #856404; }}
-            .status-medium {{ background: #d1ecf1; color: #0c5460; }}
-            .status-low {{ background: #d4edda; color: #155724; }}
-            .status-excellent {{ background: #d4edda; color: #155724; }}
-            .status-good {{ background: #d1ecf1; color: #0c5460; }}
-            .status-fair {{ background: #fff3cd; color: #856404; }}
-            .status-poor {{ background: #f8d7da; color: #721c24; }}
-            
-            .executive-summary {{
-                padding: 40px 50px;
-                background: white;
-                border-bottom: 1px solid #dee2e6;
-            }}
-            
-            .summary-title {{
-                font-size: 1.6em;
-                font-weight: 600;
-                margin-bottom: 20px;
-                color: #495057;
-                display: flex;
-                align-items: center;
-                gap: 10px;
-            }}
-            
-            .summary-text {{
-                font-size: 1.15em;
-                line-height: 1.7;
-                color: #6c757d;
-                background: #f8f9fa;
-                padding: 25px;
-                border-radius: 8px;
-                border-left: 4px solid #007bff;
-            }}
-            
-            .metrics-grid {{
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-                gap: 30px;
-                padding: 40px 50px;
-                background: #f8f9fa;
-            }}
-            
-            .metric-card {{
-                background: white;
-                padding: 25px;
-                border-radius: 12px;
-                box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-                transition: transform 0.3s ease;
-            }}
-            
-            .metric-card:hover {{
-                transform: translateY(-3px);
-                box-shadow: 0 8px 25px rgba(0,0,0,0.1);
-            }}
-            
-            .metric-title {{
-                font-size: 1.1em;
-                font-weight: 600;
-                margin-bottom: 15px;
-                color: #495057;
-                display: flex;
-                align-items: center;
-                gap: 8px;
-            }}
-            
-            .metric-value {{
-                font-size: 2em;
-                font-weight: bold;
-                margin-bottom: 8px;
-            }}
-            
-            .metric-description {{
-                font-size: 0.9em;
-                color: #6c757d;
-            }}
-            
-            .findings-section {{
-                padding: 40px 50px;
-            }}
-            
-            .section-title {{
-                font-size: 1.8em;
-                font-weight: 600;
-                margin-bottom: 30px;
-                color: #495057;
-                display: flex;
-                align-items: center;
-                gap: 12px;
-            }}
-            
-            .findings-table {{
-                width: 100%;
-                border-collapse: collapse;
-                background: white;
-                border-radius: 12px;
-                overflow: hidden;
-                box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-            }}
-            
-            .findings-table th {{
-                background: linear-gradient(135deg, #495057, #6c757d);
-                color: white;
-                padding: 20px 15px;
-                text-align: left;
-                font-weight: 600;
-                font-size: 0.95em;
-            }}
-            
-            .findings-table td {{
-                padding: 18px 15px;
-                border-bottom: 1px solid #dee2e6;
-                vertical-align: top;
-            }}
-            
-            .findings-table tr:hover {{
-                background: #f8f9fa;
-            }}
-            
-            .severity-badge {{
-                padding: 6px 12px;
-                border-radius: 20px;
-                font-size: 0.85em;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            }}
-            
-            .severity-critical {{
-                background: linear-gradient(135deg, #dc3545, #c82333);
-                color: white;
-            }}
-            
-            .severity-high {{
-                background: linear-gradient(135deg, #fd7e14, #e55a00);
-                color: white;
-            }}
-            
-            .severity-medium {{
-                background: linear-gradient(135deg, #ffc107, #e0a800);
-                color: #212529;
-            }}
-            
-            .severity-low {{
-                background: linear-gradient(135deg, #28a745, #1e7e34);
-                color: white;
-            }}
-            
-            .category-tag {{
-                background: #e9ecef;
-                color: #495057;
-                padding: 4px 10px;
-                border-radius: 12px;
-                font-size: 0.8em;
-                font-weight: 500;
-            }}
-            
-            .effort-indicator {{
-                display: flex;
-                align-items: center;
-                gap: 5px;
-                font-size: 0.9em;
-                font-weight: 500;
-            }}
-            
-            .effort-low {{ color: #28a745; }}
-            .effort-medium {{ color: #ffc107; }}
-            .effort-high {{ color: #dc3545; }}
-            
-            .recommendations-section {{
-                padding: 40px 50px;
-                background: #f8f9fa;
-            }}
-            
-            .recommendations-grid {{
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 30px;
-                margin-top: 20px;
-            }}
-            
-            .recommendation-card {{
-                background: white;
-                padding: 30px;
-                border-radius: 12px;
-                box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-            }}
-            
-            .recommendation-card h3 {{
-                font-size: 1.3em;
-                font-weight: 600;
-                margin-bottom: 20px;
-                color: #495057;
-                display: flex;
-                align-items: center;
-                gap: 10px;
-            }}
-            
-            .recommendation-list {{
-                list-style: none;
-                padding: 0;
-            }}
-            
-            .recommendation-list li {{
-                padding: 12px 0;
-                border-bottom: 1px solid #f0f0f0;
-                display: flex;
-                align-items: flex-start;
-                gap: 10px;
-            }}
-            
-            .recommendation-list li:last-child {{
-                border-bottom: none;
-            }}
-            
-            .priority-indicator {{
-                width: 8px;
-                height: 8px;
-                border-radius: 50%;
-                margin-top: 6px;
-                flex-shrink: 0;
-            }}
-            
-            .priority-critical {{ background: #dc3545; }}
-            .priority-high {{ background: #fd7e14; }}
-            .priority-medium {{ background: #ffc107; }}
-            
-            .footer {{
-                padding: 30px 50px;
-                text-align: center;
-                background: linear-gradient(135deg, #495057, #6c757d);
-                color: white;
-            }}
-            
-            .footer-content {{
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                flex-wrap: wrap;
-                gap: 20px;
-            }}
-            
-            .footer-left {{
-                display: flex;
-                align-items: center;
-                gap: 15px;
-            }}
-            
-            .footer-right {{
-                font-size: 0.9em;
-                opacity: 0.8;
-            }}
-            
-            @media (max-width: 768px) {{
-                .container {{ margin: 10px; }}
-                .executive-header, .executive-summary, .findings-section, .recommendations-section {{
-                    padding: 20px 25px;
-                }}
-                .kpi-dashboard {{ grid-template-columns: repeat(2, 1fr); }}
-                .metrics-grid {{ grid-template-columns: 1fr; }}
-                .recommendations-grid {{ grid-template-columns: 1fr; }}
-                .findings-table {{ font-size: 0.9em; }}
-                .findings-table th, .findings-table td {{ padding: 10px 8px; }}
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="executive-header">
-                <div class="header-content">
-                    <h1 class="header-title">
-                        <i class="fas fa-chart-line"></i>
-                        Executive Code Review
-                    </h1>
-                    <div class="header-subtitle">Strategic Technical Assessment & Risk Analysis</div>
-                    <div class="header-meta">
-                        <div><i class="fas fa-file-code"></i> {os.path.basename(FILE_TO_REVIEW)}</div>
-                        <div><i class="fas fa-calendar"></i> {datetime.now().strftime('%B %d, %Y')}</div>
-                        <div><i class="fas fa-clock"></i> {datetime.now().strftime('%H:%M UTC')}</div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="kpi-dashboard">
-                <div class="kpi-card">
-                    <div class="kpi-icon" style="color: {quality_color};">
-                        <i class="fas fa-gauge-high"></i>
-                    </div>
-                    <div class="kpi-value" style="color: {quality_color};">{quality_score}</div>
-                    <div class="kpi-label">Quality Score</div>
-                    <div class="kpi-status status-{quality_score >= 80 and 'excellent' or (quality_score >= 60 and 'good' or 'fair')}">
-                        {quality_score >= 80 and 'Excellent' or (quality_score >= 60 and 'Good' or 'Needs Improvement')}
-                    </div>
-                </div>
-                
-                <div class="kpi-card">
-                    <div class="kpi-icon" style="color: {risk_colors.get(business_impact, '#ffc107')};">
-                        <i class="fas fa-exclamation-triangle"></i>
-                    </div>
-                    <div class="kpi-value" style="color: {risk_colors.get(business_impact, '#ffc107')};">{business_impact}</div>
-                    <div class="kpi-label">Business Risk</div>
-                    <div class="kpi-status status-{business_impact.lower()}">{business_impact} Impact</div>
-                </div>
-                
-                <div class="kpi-card">
-                    <div class="kpi-icon" style="color: {risk_colors.get(security_risk, '#ffc107')};">
-                        <i class="fas fa-shield-alt"></i>
-                    </div>
-                    <div class="kpi-value" style="color: {risk_colors.get(security_risk, '#ffc107')};">{security_risk}</div>
-                    <div class="kpi-label">Security Risk</div>
-                    <div class="kpi-status status-{security_risk.lower()}">{security_risk} Risk</div>
-                </div>
-                
-                <div class="kpi-card">
-                    <div class="kpi-icon" style="color: {risk_colors.get(tech_debt, '#ffc107')};">
-                        <i class="fas fa-tools"></i>
-                    </div>
-                    <div class="kpi-value" style="color: {risk_colors.get(tech_debt, '#ffc107')};">{maintainability}</div>
-                    <div class="kpi-label">Maintainability</div>
-                    <div class="kpi-status status-{maintainability.lower()}">{maintainability}</div>
-                </div>
-            </div>
-            
-            <div class="executive-summary">
-                <h2 class="summary-title">
-                    <i class="fas fa-clipboard-list"></i>
-                    Executive Summary
-                </h2>
-                <div class="summary-text">{summary}</div>
-            </div>
-            
+    # Build CSS styles
+    css_styles = """
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    body { 
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif; 
+        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); 
+        color: #343a40; 
+        min-height: 100vh;
+        padding: 20px;
+    }
+    
+    .container { 
+        max-width: 1400px; 
+        margin: 0 auto; 
+        background: white; 
+        border-radius: 16px; 
+        box-shadow: 0 25px 50px rgba(0,0,0,0.15);
+        overflow: hidden;
+    }
+    
+    .executive-header { 
+        padding: 40px 50px; 
+        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); 
+        color: white; 
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .executive-header::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: 200px;
+        height: 200px;
+        background: rgba(255,255,255,0.1);
+        border-radius: 50%;
+        transform: translate(50px, -50px);
+    }
+    
+    .header-content {
+        position: relative;
+        z-index: 1;
+    }
+    
+    .header-title {
+        font-size: 2.5em;
+        font-weight: 700;
+        margin-bottom: 10px;
+        display: flex;
+        align-items: center;
+        gap: 15px;
+    }
+    
+    .header-subtitle {
+        font-size: 1.2em;
+        opacity: 0.9;
+        margin-bottom: 20px;
+    }
+    
+    .header-meta {
+        display: flex;
+        gap: 30px;
+        font-size: 0.95em;
+        opacity: 0.8;
+    }
+    
+    .kpi-dashboard {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 0;
+        background: #f8f9fa;
+    }
+    
+    .kpi-card {
+        padding: 40px 30px;
+        text-align: center;
+        border-right: 1px solid #dee2e6;
+        position: relative;
+        transition: all 0.3s ease;
+    }
+    
+    .kpi-card:last-child { border-right: none; }
+    
+    .kpi-card:hover {
+        background: white;
+        transform: translateY(-2px);
+        box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+    }
+    
+    .kpi-icon {
+        font-size: 2.5em;
+        margin-bottom: 15px;
+        opacity: 0.8;
+    }
+    
+    .kpi-value {
+        font-size: 3em;
+        font-weight: bold;
+        margin-bottom: 10px;
+        line-height: 1;
+    }
+    
+    .kpi-label {
+        font-size: 1.1em;
+        color: #6c757d;
+        font-weight: 600;
+        margin-bottom: 5px;
+    }
+    
+    .kpi-status {
+        font-size: 0.9em;
+        font-weight: 500;
+        padding: 4px 12px;
+        border-radius: 20px;
+        display: inline-block;
+    }
+    
+    .status-excellent { background: #d4edda; color: #155724; }
+    .status-good { background: #d1ecf1; color: #0c5460; }
+    .status-fair { background: #fff3cd; color: #856404; }
+    .status-poor { background: #f8d7da; color: #721c24; }
+    .status-critical { background: #f8d7da; color: #721c24; }
+    .status-high { background: #fff3cd; color: #856404; }
+    .status-medium { background: #d1ecf1; color: #0c5460; }
+    .status-low { background: #d4edda; color: #155724; }
+    
+    .executive-summary {
+        padding: 40px 50px;
+        background: white;
+        border-bottom: 1px solid #dee2e6;
+    }
+    
+    .summary-title {
+        font-size: 1.6em;
+        font-weight: 600;
+        margin-bottom: 20px;
+        color: #495057;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    
+    .summary-text {
+        font-size: 1.15em;
+        line-height: 1.7;
+        color: #6c757d;
+        background: #f8f9fa;
+        padding: 25px;
+        border-radius: 8px;
+        border-left: 4px solid #007bff;
+    }
+    
+    .findings-section {
+        padding: 40px 50px;
+    }
+    
+    .section-title {
+        font-size: 1.8em;
+        font-weight: 600;
+        margin-bottom: 30px;
+        color: #495057;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+    
+    .findings-table {
+        width: 100%;
+        border-collapse: collapse;
+        background: white;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+    }
+    
+    .findings-table th {
+        background: linear-gradient(135deg, #495057, #6c757d);
+        color: white;
+        padding: 20px 15px;
+        text-align: left;
+        font-weight: 600;
+        font-size: 0.95em;
+    }
+    
+    .findings-table td {
+        padding: 18px 15px;
+        border-bottom: 1px solid #dee2e6;
+        vertical-align: top;
+    }
+    
+    .findings-table tr:hover {
+        background: #f8f9fa;
+    }
+    
+    .severity-badge {
+        padding: 6px 12px;
+        border-radius: 20px;
+        font-size: 0.85em;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    
+    .severity-critical {
+        background: linear-gradient(135deg, #dc3545, #c82333);
+        color: white;
+    }
+    
+    .severity-high {
+        background: linear-gradient(135deg, #fd7e14, #e55a00);
+        color: white;
+    }
+    
+    .severity-medium {
+        background: linear-gradient(135deg, #ffc107, #e0a800);
+        color: #212529;
+    }
+    
+    .severity-low {
+        background: linear-gradient(135deg, #28a745, #1e7e34);
+        color: white;
+    }
+    
+    .category-tag {
+        background: #e9ecef;
+        color: #495057;
+        padding: 4px 10px;
+        border-radius: 12px;
+        font-size: 0.8em;
+        font-weight: 500;
+    }
+    
+    .effort-indicator {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 0.9em;
+        font-weight: 500;
+    }
+    
+    .effort-low { color: #28a745; }
+    .effort-medium { color: #ffc107; }
+    .effort-high { color: #dc3545; }
+    
+    .no-issues {
+        text-align: center;
+        padding: 80px 20px;
+        color: #28a745;
+        font-size: 1.3em;
+    }
+    
+    .no-issues .checkmark {
+        font-size: 4em;
+        margin-bottom: 20px;
+        display: block;
+    }
+    
+    .footer {
+        padding: 30px 50px;
+        text-align: center;
+        background: linear-gradient(135deg, #495057, #6c757d);
+        color: white;
+    }
+    
+    .footer-content {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 20px;
+    }
+    
+    .footer-left {
+        display: flex;
+        align-items: center;
+        gap: 15px;
+    }
+    
+    .footer-right {
+        font-size: 0.9em;
+        opacity: 0.8;
+    }
+    
+    @media (max-width: 768px) {
+        .container { margin: 10px; }
+        .executive-header, .executive-summary, .findings-section {
+            padding: 20px 25px;
+        }
+        .kpi-dashboard { grid-template-columns: repeat(2, 1fr); }
+    }
     """
     
     # Generate findings table HTML
     if findings:
+        # Sort findings by priority
+        sorted_findings = sorted(findings, key=lambda x: (
+            x.get("priority_ranking", 999),
+            {"CRITICAL": 1, "HIGH": 2, "MEDIUM": 3, "LOW": 4}.get(x.get("severity", "LOW"), 4)
+        ))[:15]  # Top 15 findings
+        
         findings_html = """
             <table class="findings-table">
                 <thead>
@@ -911,12 +752,6 @@ def generate_executive_html_report(json_response: dict) -> str:
                 </thead>
                 <tbody>
         """
-        
-        # Sort findings by priority
-        sorted_findings = sorted(findings, key=lambda x: (
-            x.get("priority_ranking", 999),
-            {"CRITICAL": 1, "HIGH": 2, "MEDIUM": 3, "LOW": 4}.get(x.get("severity", "LOW"), 4)
-        ))[:15]  # Top 15 findings
         
         for f in sorted_findings:
             severity = f.get("severity", "MEDIUM").upper()
@@ -950,85 +785,113 @@ def generate_executive_html_report(json_response: dict) -> str:
         """
     else:
         findings_html = """
-            <div style="text-align: center; padding: 60px; color: #28a745; font-size: 1.3em;">
-                <i class="fas fa-check-circle" style="font-size: 3em; margin-bottom: 20px; display: block;"></i>
+            <div class="no-issues">
+                <i class="fas fa-check-circle checkmark"></i>
                 No technical issues identified.<br/>
                 <small style="color: #6c757d; margin-top: 10px;">Excellent code quality maintained!</small>
             </div>
         """
     
-    # Generate recommendations HTML
-    strategic_recs = json_response.get("strategic_recommendations", ["Maintain current code quality standards", "Continue regular code reviews"])
-    immediate_actions = json_response.get("immediate_actions", ["No immediate actions required", "Continue monitoring code quality"])
-    
-    strategic_html = ""
-    for i, rec in enumerate(strategic_recs):
-        priority_class = "critical" if i < 2 else "high" if i < 4 else "medium"
-        strategic_html += f"""
-            <li>
-                <div class="priority-indicator priority-{priority_class}"></div>
-                <div>{rec}</div>
-            </li>
-        """
-    
-    immediate_html = ""
-    for action in immediate_actions:
-        immediate_html += f"""
-            <li>
-                <div class="priority-indicator priority-critical"></div>
-                <div>{action}</div>
-            </li>
-        """
-    
-    # Complete the HTML
-    html_content += f"""
-            <div class="findings-section">
-                <h2 class="section-title">
-                    <i class="fas fa-search"></i>
-                    Detailed Technical Findings
-                </h2>
-                {findings_html}
-            </div>
-            
-            <div class="recommendations-section">
-                <h2 class="section-title">
-                    <i class="fas fa-lightbulb"></i>
-                    Strategic Recommendations
-                </h2>
-                
-                <div class="recommendations-grid">
-                    <div class="recommendation-card">
-                        <h3><i class="fas fa-chess-queen"></i> Leadership Actions</h3>
-                        <ul class="recommendation-list">
-                            {strategic_html}
-                        </ul>
-                    </div>
-                    
-                    <div class="recommendation-card">
-                        <h3><i class="fas fa-bolt"></i> Immediate Actions</h3>
-                        <ul class="recommendation-list">
-                            {immediate_html}
-                        </ul>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="footer">
-                <div class="footer-content">
-                    <div class="footer-left">
-                        <i class="fas fa-brain"></i>
-                        <strong>Powered by Snowflake Cortex AI</strong>
-                        <span style="opacity: 0.8;">| Executive Technical Analysis</span>
-                    </div>
-                    <div class="footer-right">
-                        Report ID: {datetime.now().strftime('%Y%m%d_%H%M%S')} | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
-                    </div>
+    # Build complete HTML
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Executive Code Review - {os.path.basename(FILE_TO_REVIEW)}</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        {css_styles}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="executive-header">
+            <div class="header-content">
+                <h1 class="header-title">
+                    <i class="fas fa-chart-line"></i>
+                    Executive Code Review
+                </h1>
+                <div class="header-subtitle">Strategic Technical Assessment & Risk Analysis</div>
+                <div class="header-meta">
+                    <div><i class="fas fa-file-code"></i> {os.path.basename(FILE_TO_REVIEW)}</div>
+                    <div><i class="fas fa-calendar"></i> {datetime.now().strftime('%B %d, %Y')}</div>
+                    <div><i class="fas fa-clock"></i> {datetime.now().strftime('%H:%M UTC')}</div>
                 </div>
             </div>
         </div>
-    </body>
-    </html>
-    """
+        
+        <div class="kpi-dashboard">
+            <div class="kpi-card">
+                <div class="kpi-icon" style="color: {quality_color};">
+                    <i class="fas fa-gauge-high"></i>
+                </div>
+                <div class="kpi-value" style="color: {quality_color};">{quality_score}</div>
+                <div class="kpi-label">Quality Score</div>
+                <div class="kpi-status status-{'excellent' if quality_score >= 80 else ('good' if quality_score >= 60 else 'fair')}">
+                    {'Excellent' if quality_score >= 80 else ('Good' if quality_score >= 60 else 'Needs Improvement')}
+                </div>
+            </div>
+            
+            <div class="kpi-card">
+                <div class="kpi-icon" style="color: {risk_colors.get(business_impact, '#ffc107')};">
+                    <i class="fas fa-exclamation-triangle"></i>
+                </div>
+                <div class="kpi-value" style="color: {risk_colors.get(business_impact, '#ffc107')};">{business_impact}</div>
+                <div class="kpi-label">Business Risk</div>
+                <div class="kpi-status status-{business_impact.lower()}">{business_impact} Impact</div>
+            </div>
+            
+            <div class="kpi-card">
+                <div class="kpi-icon" style="color: {risk_colors.get(security_risk, '#ffc107')};">
+                    <i class="fas fa-shield-alt"></i>
+                </div>
+                <div class="kpi-value" style="color: {risk_colors.get(security_risk, '#ffc107')};">{security_risk}</div>
+                <div class="kpi-label">Security Risk</div>
+                <div class="kpi-status status-{security_risk.lower()}">{security_risk} Risk</div>
+            </div>
+            
+            <div class="kpi-card">
+                <div class="kpi-icon" style="color: {risk_colors.get(tech_debt, '#ffc107')};">
+                    <i class="fas fa-tools"></i>
+                </div>
+                <div class="kpi-value" style="color: {risk_colors.get(tech_debt, '#ffc107')};">{maintainability}</div>
+                <div class="kpi-label">Maintainability</div>
+                <div class="kpi-status status-{maintainability.lower()}">{maintainability}</div>
+            </div>
+        </div>
+        
+        <div class="executive-summary">
+            <h2 class="summary-title">
+                <i class="fas fa-clipboard-list"></i>
+                Executive Summary
+            </h2>
+            <div class="summary-text">{summary}</div>
+        </div>
+        
+        <div class="findings-section">
+            <h2 class="section-title">
+                <i class="fas fa-search"></i>
+                Detailed Technical Findings
+            </h2>
+            {findings_html}
+        </div>
+        
+        <div class="footer">
+            <div class="footer-content">
+                <div class="footer-left">
+                    <i class="fas fa-brain"></i>
+                    <strong>Powered by Snowflake Cortex AI</strong>
+                    <span style="opacity: 0.8;">| Executive Technical Analysis</span>
+                </div>
+                <div class="footer-right">
+                    Report ID: {datetime.now().strftime('%Y%m%d_%H%M%S')} | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>"""
     
     return html_content
 
@@ -1168,5 +1031,4 @@ if __name__ == "__main__":
     finally:
         if 'session' in locals():
             session.close()
-            print("\n🔒 Analysis session completed")"""
-</invoke>
+            print("\n🔒 Analysis session completed")
