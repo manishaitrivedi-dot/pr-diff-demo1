@@ -3,24 +3,12 @@ from pathlib import Path
 from snowflake.snowpark import Session
 import pandas as pd
 from datetime import datetime
-import tiktoken
-
-# Use the correct Snowflake Cortex import approach
-try:
-    from snowflake.cortex import complete
-    from snowflake.cortex._complete import CompleteOptions
-except ImportError:
-    # Fallback for older Snowflake versions
-    print("Warning: snowflake.cortex not available, using alternative approach")
-    complete = None
-    CompleteOptions = None
 
 # ---------------------
 # Config
 # ---------------------
 MODEL = "openai-gpt-4.1"
 MAX_CHARS_FOR_FINAL_SUMMARY_FILE = 65000
-MAX_TOKENS_FOR_SUMMARY_INPUT = 100000
 
 # For single file testing (when not using directory mode)
 FILE_TO_REVIEW = "scripts/simple_test.py"
@@ -40,7 +28,7 @@ cfg = {
 session = Session.builder.configs(cfg).create()
 
 # ---------------------
-# PROMPT 1: Individual File Review (from teammate)
+# PROMPT 1: Individual File Review
 # ---------------------
 PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level Python code reviewer. Your review must be concise, accurate, and directly actionable, as it will be posted as a GitHub Pull Request comment.
 
@@ -61,7 +49,7 @@ PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level Python code revi
 
 # ELIGIBILITY CRITERIA FOR FINDINGS (ALL must be met)
 -   **Evidence:** Quote the exact code snippet and cite the line number.
--   **Severity:** Assign {{Low | Medium | High | Critical}}.
+-   **Severity:** Assign {Low | Medium | High | Critical}.
 -   **Impact & Action:** Briefly explain the issue and provide a minimal, safe correction.
 -   **Non-trivial:** Skip purely stylistic nits (e.g., import order, line length) that a linter would catch.
 
@@ -85,10 +73,10 @@ Your entire response MUST be under 65,000 characters. Prioritize findings with H
 *A list of all material findings. If no significant issues are found, state "No significant issues found."*
 
 **File:** {filename}
--   **Severity:** {{Critical | High | Medium | Low}}
--   **Line:** {{line_number}}
--   **Function/Context:** `{{function_name_if_applicable}}`
--   **Finding:** {{A clear, concise description of the issue, its impact, and a recommended correction.}}
+-   **Severity:** {Critical | High | Medium | Low}
+-   **Line:** {line_number}
+-   **Function/Context:** `{function_name_if_applicable}`
+-   **Finding:** {A clear, concise description of the issue, its impact, and a recommended correction.}
 
 **(Repeat for each finding)**
 
@@ -103,7 +91,7 @@ Your entire response MUST be under 65,000 characters. Prioritize findings with H
 """
 
 # ---------------------
-# PROMPT 2: Consolidation (from teammate, modified for executive output)
+# PROMPT 2: Consolidation
 # ---------------------
 PROMPT_TEMPLATE_CONSOLIDATED = """
 You are an expert code review summarization engine for executive-level reporting. Your task is to analyze individual code reviews and generate a single, consolidated executive summary with business impact focus.
@@ -147,40 +135,18 @@ Here are the individual code reviews to process:
 {ALL_REVIEWS_CONTENT}
 """
 
-# Note: Response format removed as it's not compatible with SQL-based Cortex calls
-# The prompts are designed to naturally produce the desired JSON structure
-
-# Utility functions
-def count_tokens(text: str) -> int:
-    tokenizer = tiktoken.get_encoding("cl100k_base")
-    return len(tokenizer.encode(text))
-
-def truncate_by_tokens(text: str, max_tokens: int) -> str:
-    tokenizer = tiktoken.get_encoding("cl100k_base")
-    tokens = tokenizer.encode(text)
-    if len(tokens) > max_tokens:
-        print(f"Warning: Text exceeds {max_tokens} tokens ({len(tokens)}). Truncating.", file=sys.stderr)
-        return tokenizer.decode(tokens[:max_tokens])
-    return text
-
 def build_prompt_for_individual_review(code_text: str, filename: str = "code_file") -> str:
-    """Build PROMPT 1 for individual file review"""
     prompt = PROMPT_TEMPLATE_INDIVIDUAL.replace("{PY_CONTENT}", code_text)
     prompt = prompt.replace("{filename}", filename)
     return prompt
 
 def build_prompt_for_consolidated_summary(all_reviews_content: str) -> str:
-    """Build PROMPT 2 for consolidation"""
-    all_reviews_content_truncated = truncate_by_tokens(all_reviews_content, MAX_TOKENS_FOR_SUMMARY_INPUT)
-    return PROMPT_TEMPLATE_CONSOLIDATED.replace("{ALL_REVIEWS_CONTENT}", all_reviews_content_truncated)
+    return PROMPT_TEMPLATE_CONSOLIDATED.replace("{ALL_REVIEWS_CONTENT}", all_reviews_content)
 
-def review_with_cortex(model, prompt_text: str, session, use_json_format=False) -> str:
-    """Call Cortex using session.sql approach (compatible with all Snowflake versions)"""
+def review_with_cortex(model, prompt_text: str, session) -> str:
     try:
-        # Clean the prompt for SQL injection safety
         clean_prompt = prompt_text.replace("'", "''").replace("\\", "\\\\")
         
-        # Use the SQL approach that works with all Snowflake versions
         query = f"""
             SELECT SNOWFLAKE.CORTEX.COMPLETE(
                 '{model}',
@@ -197,7 +163,6 @@ def review_with_cortex(model, prompt_text: str, session, use_json_format=False) 
         return f"ERROR: Could not get response from Cortex. Reason: {e}"
 
 def chunk_large_file(code_text: str, max_chunk_size: int = 50000) -> list:
-    """Split large files into smaller chunks for processing"""
     if len(code_text) <= max_chunk_size:
         return [code_text]
     
@@ -207,7 +172,7 @@ def chunk_large_file(code_text: str, max_chunk_size: int = 50000) -> list:
     current_size = 0
     
     for line in lines:
-        line_size = len(line) + 1  # +1 for newline
+        line_size = len(line) + 1
         if current_size + line_size > max_chunk_size and current_chunk:
             chunks.append('\n'.join(current_chunk))
             current_chunk = [line]
@@ -222,8 +187,6 @@ def chunk_large_file(code_text: str, max_chunk_size: int = 50000) -> list:
     return chunks
 
 def format_executive_pr_display(json_response: dict, processed_files: list) -> str:
-    """Generate executive-level markdown with professional tables"""
-    
     summary = json_response.get("executive_summary", "Technical analysis completed")
     findings = json_response.get("detailed_findings", [])
     quality_score = json_response.get("quality_score", 75)
@@ -235,12 +198,10 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
     strategic_recs = json_response.get("strategic_recommendations", [])
     immediate_actions = json_response.get("immediate_actions", [])
     
-    # Count findings by severity
     critical_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "CRITICAL")
     high_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "HIGH")
     medium_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "MEDIUM")
     
-    # Risk indicators
     risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}
     quality_emoji = "🟢" if quality_score >= 80 else ("🟡" if quality_score >= 60 else "🔴")
     
@@ -270,7 +231,6 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 
 """
 
-    # Technical Metrics
     if metrics:
         loc = metrics.get("lines_of_code", "N/A")
         complexity = metrics.get("complexity_score", "N/A")
@@ -288,7 +248,6 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 
 """
 
-    # Detailed Findings
     if findings:
         display_text += """<details>
 <summary><strong>🔍 Detailed Technical Findings</strong> (Click to expand)</summary>
@@ -313,7 +272,6 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
         
         display_text += "\n</details>\n\n"
 
-    # Strategic Recommendations
     if strategic_recs:
         display_text += """## 🎯 Strategic Recommendations
 
@@ -325,7 +283,6 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
             display_text += f"{i}. {rec}\n"
         display_text += "\n</details>\n\n"
 
-    # Immediate Actions
     if immediate_actions:
         display_text += """## ⚡ Immediate Actions Required
 
@@ -345,20 +302,14 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 
     return display_text
 
-# ---------------------
-# Main Logic - Ensures BOTH prompts are always used
-# ---------------------
 def main():
-    # Determine if running in directory mode or single file mode
     if len(sys.argv) >= 5:
-        # Directory mode (from GitHub Actions)
         folder_path = sys.argv[1]
         output_folder_path = sys.argv[2]
         pull_request_number = int(sys.argv[3])
         commit_sha = sys.argv[4]
         directory_mode = True
     else:
-        # Single file mode (for testing)
         folder_path = None
         output_folder_path = "output_reviews"
         pull_request_number = 0
@@ -366,7 +317,6 @@ def main():
         directory_mode = False
         print(f"Running in single-file mode with: {FILE_TO_REVIEW}")
 
-    # Setup output directory
     if os.path.exists(output_folder_path):
         import shutil
         shutil.rmtree(output_folder_path)
@@ -375,15 +325,12 @@ def main():
     all_individual_reviews = []
     processed_files = []
 
-    # STAGE 1: Individual File Reviews (PROMPT 1)
     print("\n🔍 STAGE 1: Individual File Analysis...")
     print("=" * 60)
     
     if directory_mode:
-        # Process directory of files
         files_to_process = [f for f in os.listdir(folder_path) if f.endswith((".py", ".sql"))]
     else:
-        # Process single file
         if not os.path.exists(FILE_TO_REVIEW):
             print(f"❌ File {FILE_TO_REVIEW} not found")
             return
@@ -407,7 +354,6 @@ def main():
             if not code_content.strip():
                 review_text = "No code found in file, skipping review."
             else:
-                # Check if file is too large and needs chunking
                 chunks = chunk_large_file(code_content)
                 print(f"  File split into {len(chunks)} chunk(s)")
                 
@@ -416,12 +362,10 @@ def main():
                     chunk_name = f"{filename}_chunk_{i+1}" if len(chunks) > 1 else filename
                     print(f"  Processing chunk: {chunk_name}")
                     
-                    # PROMPT 1: Individual review
                     individual_prompt = build_prompt_for_individual_review(chunk, chunk_name)
                     review_text = review_with_cortex(MODEL, individual_prompt, session)
                     chunk_reviews.append(review_text)
                 
-                # Combine chunk reviews if multiple
                 if len(chunk_reviews) > 1:
                     review_text = "\n\n".join([f"## Chunk {i+1}\n{review}" for i, review in enumerate(chunk_reviews)])
                 else:
@@ -432,7 +376,6 @@ def main():
                 "review_feedback": review_text
             })
 
-            # Save individual review
             output_filename = f"{Path(filename).stem}_individual_review.md"
             output_file_path = os.path.join(output_folder_path, output_filename)
             with open(output_file_path, 'w', encoding='utf-8') as outfile:
@@ -446,7 +389,6 @@ def main():
                 "review_feedback": f"ERROR: Could not generate review. Reason: {e}"
             })
 
-    # STAGE 2: Consolidation (PROMPT 2) - ALWAYS RUNS
     print(f"\n🔄 STAGE 2: Executive Consolidation...")
     print("=" * 60)
     print(f"Consolidating {len(all_individual_reviews)} individual reviews...")
@@ -456,21 +398,17 @@ def main():
         return
 
     try:
-        # Prepare data for PROMPT 2
         combined_reviews_json = json.dumps(all_individual_reviews, indent=2)
         print(f"  Combined reviews: {len(combined_reviews_json)} characters")
 
-        # PROMPT 2: Consolidation
         consolidation_prompt = build_prompt_for_consolidated_summary(combined_reviews_json)
         consolidated_raw = review_with_cortex(MODEL, consolidation_prompt, session)
         
-        # Parse consolidated result
         try:
             consolidated_json = json.loads(consolidated_raw)
             print("  ✅ Successfully parsed consolidated JSON response")
         except json.JSONDecodeError as e:
             print(f"  ⚠️ JSON parsing failed: {e}")
-            # Fallback parsing
             json_match = re.search(r'\{.*\}', consolidated_raw, re.DOTALL)
             if json_match:
                 consolidated_json = json.loads(json_match.group())
@@ -484,21 +422,17 @@ def main():
                     "immediate_actions": []
                 }
 
-        # Generate executive-formatted output
         executive_summary = format_executive_pr_display(consolidated_json, processed_files)
         
-        # Save consolidated results
         consolidated_path = os.path.join(output_folder_path, "consolidated_executive_summary.md")
         with open(consolidated_path, 'w', encoding='utf-8') as f:
             f.write(executive_summary)
         print(f"  ✅ Executive summary saved: consolidated_executive_summary.md")
 
-        # Save raw JSON for debugging
         json_path = os.path.join(output_folder_path, "consolidated_data.json")
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(consolidated_json, f, indent=2)
 
-        # GitHub Actions output
         if 'GITHUB_OUTPUT' in os.environ:
             delimiter = str(uuid.uuid4())
             with open(os.environ['GITHUB_OUTPUT'], 'a') as gh_out:
@@ -507,7 +441,6 @@ def main():
                 gh_out.write(f'{delimiter}\n')
             print("  ✅ GitHub Actions output written")
 
-        # Summary
         print(f"\n🎉 TWO-STAGE ANALYSIS COMPLETED!")
         print("=" * 60)
         print(f"📁 Files processed: {len(processed_files)}")
