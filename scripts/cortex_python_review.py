@@ -7,7 +7,7 @@ from datetime import datetime
 # ---------------------
 # Config
 # ---------------------
-MODEL = "llama3.1-70b"
+MODEL = "openai-gpt-4.1"
 MAX_CODE_CHARS = 40_000
 FILE_TO_REVIEW = "scripts/simple_test.py"
 
