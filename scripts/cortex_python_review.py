@@ -1,11 +1,19 @@
 import os, sys, json, re, uuid
 from pathlib import Path
 from snowflake.snowpark import Session
-from snowflake.cortex import complete
-from snowflake.cortex._complete import CompleteOptions
 import pandas as pd
 from datetime import datetime
 import tiktoken
+
+# Use the correct Snowflake Cortex import approach
+try:
+    from snowflake.cortex import complete
+    from snowflake.cortex._complete import CompleteOptions
+except ImportError:
+    # Fallback for older Snowflake versions
+    print("Warning: snowflake.cortex not available, using alternative approach")
+    complete = None
+    CompleteOptions = None
 
 # ---------------------
 # Config
@@ -139,51 +147,8 @@ Here are the individual code reviews to process:
 {ALL_REVIEWS_CONTENT}
 """
 
-# Response format
-openai_response_format = {
-    "type": "json",
-    "schema": {
-        "type": "object",
-        "properties": {
-            "executive_summary": {"type": "string"},
-            "quality_score": {"type": "number"},
-            "business_impact": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
-            "technical_debt_score": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
-            "security_risk_level": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]},
-            "maintainability_rating": {"type": "string", "enum": ["POOR", "FAIR", "GOOD", "EXCELLENT"]},
-            "detailed_findings": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "severity": {"type": "string", "enum": ["Low", "Medium", "High", "Critical"]},
-                        "category": {"type": "string"},
-                        "line_number": {"type": "string"},
-                        "function_context": {"type": "string"},
-                        "finding": {"type": "string"},
-                        "business_impact": {"type": "string"},
-                        "recommendation": {"type": "string"},
-                        "effort_estimate": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
-                        "priority_ranking": {"type": "number"},
-                        "filename": {"type": "string"}
-                    }
-                }
-            },
-            "metrics": {
-                "type": "object",
-                "properties": {
-                    "lines_of_code": {"type": "number"},
-                    "complexity_score": {"type": "string"},
-                    "code_coverage_gaps": {"type": "array", "items": {"type": "string"}},
-                    "dependency_risks": {"type": "array", "items": {"type": "string"}}
-                }
-            },
-            "strategic_recommendations": {"type": "array", "items": {"type": "string"}},
-            "immediate_actions": {"type": "array", "items": {"type": "string"}}
-        },
-        "required": ["executive_summary", "quality_score", "business_impact"]
-    }
-}
+# Note: Response format removed as it's not compatible with SQL-based Cortex calls
+# The prompts are designed to naturally produce the desired JSON structure
 
 # Utility functions
 def count_tokens(text: str) -> int:
@@ -210,19 +175,23 @@ def build_prompt_for_consolidated_summary(all_reviews_content: str) -> str:
     return PROMPT_TEMPLATE_CONSOLIDATED.replace("{ALL_REVIEWS_CONTENT}", all_reviews_content_truncated)
 
 def review_with_cortex(model, prompt_text: str, session, use_json_format=False) -> str:
-    """Call Cortex with optional JSON formatting"""
+    """Call Cortex using session.sql approach (compatible with all Snowflake versions)"""
     try:
-        options = CompleteOptions(temperature=0)
-        if use_json_format:
-            options.response_format = openai_response_format
-            
-        review = complete(
-            model=model,
-            prompt=prompt_text,
-            session=session,
-            options=options
-        )
-        return review
+        # Clean the prompt for SQL injection safety
+        clean_prompt = prompt_text.replace("'", "''").replace("\\", "\\\\")
+        
+        # Use the SQL approach that works with all Snowflake versions
+        query = f"""
+            SELECT SNOWFLAKE.CORTEX.COMPLETE(
+                '{model}',
+                '{clean_prompt}'
+            ) as response
+        """
+        
+        df = session.sql(query)
+        result = df.collect()[0][0]
+        return result
+        
     except Exception as e:
         print(f"Error calling Cortex complete for model '{model}': {e}", file=sys.stderr)
         return f"ERROR: Could not get response from Cortex. Reason: {e}"
@@ -449,7 +418,7 @@ def main():
                     
                     # PROMPT 1: Individual review
                     individual_prompt = build_prompt_for_individual_review(chunk, chunk_name)
-                    review_text = review_with_cortex(MODEL, individual_prompt, session, use_json_format=False)
+                    review_text = review_with_cortex(MODEL, individual_prompt, session)
                     chunk_reviews.append(review_text)
                 
                 # Combine chunk reviews if multiple
@@ -493,7 +462,7 @@ def main():
 
         # PROMPT 2: Consolidation
         consolidation_prompt = build_prompt_for_consolidated_summary(combined_reviews_json)
-        consolidated_raw = review_with_cortex(MODEL, consolidation_prompt, session, use_json_format=True)
+        consolidated_raw = review_with_cortex(MODEL, consolidation_prompt, session)
         
         # Parse consolidated result
         try:
