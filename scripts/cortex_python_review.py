@@ -37,11 +37,10 @@ PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level Python code revi
 ---
 # CONTEXT: HOW TO REVIEW (Apply Silently)
 
-1.  **You are reviewing code changes in a Pull Request.** The content provided may be a git diff showing only the changed lines, or complete file content. Focus on the actual changes being proposed.
-2.  **If reviewing a git diff:** Focus only on the added/modified lines (marked with + or @@). Do not comment on unchanged context lines.
-3.  **If reviewing a complete file:** Provide a general code quality assessment.
-4.  **Focus your review on the most critical aspects.** Prioritize findings that have business impact or security implications.
-5.  **Your entire response MUST be under 65,000 characters.** Prioritize findings with `High` or `Critical` severity.
+1.  **You are reviewing a code file for executive-level analysis.** Focus on business impact, technical debt, security risks, and maintainability.
+2.  **Focus your review on the most critical aspects.** Prioritize findings that have business impact or security implications.
+3.  **Infer context from the full code.** Base your review on the complete file provided.
+4.  **Your entire response MUST be under 65,000 characters.** Prioritize findings with `High` or `Critical` severity. If the review is extensive, omit `Low` severity findings to meet the length constraint.
 
 # REVIEW PRIORITIES (Strict Order)
 1.  Security & Correctness
@@ -51,22 +50,25 @@ PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level Python code revi
 5.  Testability
 
 # ELIGIBILITY CRITERIA FOR FINDINGS (ALL must be met)
--   **Evidence:** Quote the exact code snippet and cite the line number if available.
+-   **Evidence:** Quote the exact code snippet and cite the line number.
 -   **Severity:** Assign {Low | Medium | High | Critical}.
 -   **Impact & Action:** Briefly explain the issue and provide a minimal, safe correction.
 -   **Non-trivial:** Skip purely stylistic nits (e.g., import order, line length) that a linter would catch.
 
 # HARD CONSTRAINTS (For accuracy & anti-hallucination)
 -   Do NOT propose APIs that don't exist for the imported modules.
+-   Treat parameters like `db_path` as correct dependency injection; do NOT call them hardcoded.
+-   NEVER suggest logging sensitive user data or internal paths. Suggest non-reversible fingerprints if context is needed.
 -   Do NOT recommend removing correct type hints or docstrings.
--   If code is already correct and idiomatic, do NOT invent problems.
--   For git diffs: Only comment on the changed lines, not the context.
+-   If code in the file is already correct and idiomatic, do NOT invent problems.
 
 ---
 # OUTPUT FORMAT (Strict, professional, audit-ready)
 
+Your entire response MUST be under 65,000 characters. Prioritize findings with High or Critical severity. If the review is extensive, omit Low severity findings to meet the length constraint.
+
 ## Code Review Summary
-*A 2-3 sentence high-level summary focusing on the changes being reviewed.*
+*A 2-3 sentence high-level summary. Mention the key strengths and the most critical areas for improvement.*
 
 ---
 ### Detailed Findings
@@ -82,7 +84,7 @@ PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level Python code revi
 
 ---
 ### Key Recommendations
-*Provide 2-3 high-level, actionable recommendations for improving the code quality based on the findings.*
+*Provide 2-3 high-level, actionable recommendations for improving the overall quality of the codebase based on the findings. Do not repeat the findings themselves.*
 
 ---
 # CODE TO REVIEW
@@ -205,14 +207,14 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
     risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}
     quality_emoji = "🟢" if quality_score >= 80 else ("🟡" if quality_score >= 60 else "🔴")
     
-    display_text = f"""# Executive Code Review Report
+    display_text = f"""# 📊 Executive Code Review Report
 
 **Files Analyzed:** {len(processed_files)} files | **Analysis Date:** {datetime.now().strftime('%Y-%m-%d')}
 
-## Executive Summary
+## 🎯 Executive Summary
 {summary}
 
-## Quality Dashboard
+## 📈 Quality Dashboard
 
 | Metric | Score | Status | Business Impact |
 |--------|-------|--------|-----------------|
@@ -221,13 +223,13 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 | **Technical Debt** | {tech_debt} | {risk_emoji.get(tech_debt, "🟡")} | {len(findings)} items |
 | **Maintainability** | {maintainability} | {risk_emoji.get(maintainability, "🟡")} | Long-term sustainability |
 
-## Issue Distribution
+## 🔍 Issue Distribution
 
 | Severity | Count | Priority Actions |
 |----------|-------|------------------|
-| Critical | {critical_count} | Immediate fix required |
-| High | {high_count} | Fix within sprint |
-| Medium | {medium_count} | Plan for next release |
+| 🔴 Critical | {critical_count} | Immediate fix required |
+| 🟠 High | {high_count} | Fix within sprint |
+| 🟡 Medium | {medium_count} | Plan for next release |
 
 """
 
@@ -237,20 +239,20 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
         coverage_gaps = len(metrics.get("code_coverage_gaps", []))
         dep_risks = len(metrics.get("dependency_risks", []))
         
-        display_text += f"""## Technical Metrics
+        display_text += f"""## 📊 Technical Metrics
 
 | Metric | Value | Assessment |
 |--------|-------|------------|
-| **Lines of Code** | {loc} | {'Manageable' if isinstance(loc, int) and loc < 500 else 'Monitor'} |
+| **Lines of Code** | {loc} | {'🟢 Manageable' if isinstance(loc, int) and loc < 500 else '🟡 Monitor'} |
 | **Complexity** | {complexity} | {risk_emoji.get(complexity, "🟡")} |
-| **Coverage Gaps** | {coverage_gaps} areas | {'Good' if coverage_gaps < 3 else 'Needs attention'} |
-| **Dependency Risks** | {dep_risks} items | {'Low risk' if dep_risks < 3 else 'Monitor'} |
+| **Coverage Gaps** | {coverage_gaps} areas | {'🟢 Good' if coverage_gaps < 3 else '🟡 Needs attention'} |
+| **Dependency Risks** | {dep_risks} items | {'🟢 Low risk' if dep_risks < 3 else '🟡 Monitor'} |
 
 """
 
     if findings:
         display_text += """<details>
-<summary><strong>Detailed Technical Findings</strong> (Click to expand)</summary>
+<summary><strong>🔍 Detailed Technical Findings</strong> (Click to expand)</summary>
 
 | Priority | File | Line | Issue | Business Impact |
 |----------|------|------|-------|-----------------|
@@ -273,10 +275,10 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
         display_text += "\n</details>\n\n"
 
     if strategic_recs:
-        display_text += """## Strategic Recommendations
+        display_text += """## 🎯 Strategic Recommendations
 
 <details>
-<summary><strong>Leadership Actions</strong> (Click to expand)</summary>
+<summary><strong>💡 Leadership Actions</strong> (Click to expand)</summary>
 
 """
         for i, rec in enumerate(strategic_recs, 1):
@@ -284,10 +286,10 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
         display_text += "\n</details>\n\n"
 
     if immediate_actions:
-        display_text += """## Immediate Actions Required
+        display_text += """## ⚡ Immediate Actions Required
 
 <details>
-<summary><strong>Critical Tasks</strong> (Click to expand)</summary>
+<summary><strong>🚨 Critical Tasks</strong> (Click to expand)</summary>
 
 """
         for i, action in enumerate(immediate_actions, 1):
@@ -296,9 +298,9 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 
     display_text += f"""---
 
-**Review Summary:** {len(findings)} findings identified | **Quality Score:** {quality_score}/100 | **Critical Issues:** {critical_count}
+**📋 Review Summary:** {len(findings)} findings identified | **🎯 Quality Score:** {quality_score}/100 | **⚡ Critical Issues:** {critical_count}
 
-*Powered by Snowflake Cortex AI • Two-Stage Executive Analysis*"""
+*🔬 Powered by Snowflake Cortex AI • Two-Stage Executive Analysis*"""
 
     return display_text
 
@@ -311,7 +313,7 @@ def main():
         try:
             pull_request_number = int(sys.argv[3]) if sys.argv[3] and sys.argv[3].strip() else None
         except (ValueError, IndexError):
-            print(f"Warning: Invalid or empty PR number '{sys.argv[3] if len(sys.argv) > 3 else 'None'}', using None")
+            print(f"⚠️  Warning: Invalid or empty PR number '{sys.argv[3] if len(sys.argv) > 3 else 'None'}', using None")
             pull_request_number = None
         commit_sha = sys.argv[4]
         directory_mode = True
@@ -331,14 +333,14 @@ def main():
     all_individual_reviews = []
     processed_files = []
 
-    print("\nSTAGE 1: Individual File Analysis...")
+    print("\n🔍 STAGE 1: Individual File Analysis...")
     print("=" * 60)
     
     if directory_mode:
         files_to_process = [f for f in os.listdir(folder_path) if f.endswith((".py", ".sql"))]
     else:
         if not os.path.exists(FILE_TO_REVIEW):
-            print(f"File {FILE_TO_REVIEW} not found")
+            print(f"❌ File {FILE_TO_REVIEW} not found")
             return
         files_to_process = [FILE_TO_REVIEW]
         folder_path = os.path.dirname(FILE_TO_REVIEW)
@@ -386,21 +388,21 @@ def main():
             output_file_path = os.path.join(output_folder_path, output_filename)
             with open(output_file_path, 'w', encoding='utf-8') as outfile:
                 outfile.write(review_text)
-            print(f"  Individual review saved: {output_filename}")
+            print(f"  ✅ Individual review saved: {output_filename}")
 
         except Exception as e:
-            print(f"  Error processing {filename}: {e}")
+            print(f"  ❌ Error processing {filename}: {e}")
             all_individual_reviews.append({
                 "filename": filename,
                 "review_feedback": f"ERROR: Could not generate review. Reason: {e}"
             })
 
-    print(f"\nSTAGE 2: Executive Consolidation...")
+    print(f"\n🔄 STAGE 2: Executive Consolidation...")
     print("=" * 60)
     print(f"Consolidating {len(all_individual_reviews)} individual reviews...")
 
     if not all_individual_reviews:
-        print("No reviews to consolidate")
+        print("❌ No reviews to consolidate")
         return
 
     try:
@@ -413,9 +415,9 @@ def main():
         
         try:
             consolidated_json = json.loads(consolidated_raw)
-            print("  Successfully parsed consolidated JSON response")
+            print("  ✅ Successfully parsed consolidated JSON response")
         except json.JSONDecodeError as e:
-            print(f"  JSON parsing failed: {e}")
+            print(f"  ⚠️ JSON parsing failed: {e}")
             json_match = re.search(r'\{.*\}', consolidated_raw, re.DOTALL)
             if json_match:
                 consolidated_json = json.loads(json_match.group())
@@ -431,33 +433,121 @@ def main():
 
         executive_summary = format_executive_pr_display(consolidated_json, processed_files)
         
+        # ADDED: Compare with previous review if this is a subsequent commit
+        previous_review_comparison = None
+        if pull_request_number and pull_request_number != 0:
+            try:
+                # Setup table if it doesn't exist
+                create_table_query = """
+                CREATE TABLE IF NOT EXISTS CODE_REVIEW_LOG (
+                    REVIEW_ID INTEGER AUTOINCREMENT START 1 INCREMENT 1,
+                    PULL_REQUEST_NUMBER INTEGER,
+                    COMMIT_SHA VARCHAR(40),
+                    REVIEW_SUMMARY VARCHAR,
+                    REVIEW_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+                );
+                """
+                session.sql(create_table_query).collect()
+                
+                # Check for previous reviews
+                query = f"""
+                    SELECT REVIEW_SUMMARY FROM CODE_REVIEW_LOG 
+                    WHERE PULL_REQUEST_NUMBER = {pull_request_number}
+                    ORDER BY REVIEW_TIMESTAMP DESC 
+                    LIMIT 2
+                """
+                result = session.sql(query).collect()
+                
+                if len(result) >= 1:
+                    previous_review = result[0]["REVIEW_SUMMARY"][:3000]
+                    current_review = executive_summary[:3000]
+                    
+                    comparison_prompt = f"""Compare the previous and current code reviews and identify what issues were resolved or improved. Be specific about which issues were addressed.
+
+PREVIOUS REVIEW:
+{previous_review}
+
+CURRENT REVIEW:  
+{current_review}
+
+Respond in this format:
+**Issues Resolved Since Last Review:**
+- [Specific issue]: ✅ Resolved / ⚠️ Partially Resolved / ❌ Not Addressed
+
+**New Issues Identified:**
+- [New issue found in current review]
+
+**Overall Progress:** Brief summary of improvement or regression
+"""
+                    
+                    comparison_result = review_with_cortex(MODEL, comparison_prompt, session)
+                    previous_review_comparison = comparison_result
+                    print("  ✅ Generated comparison with previous review")
+                    
+            except Exception as e:
+                print(f"  Warning: Could not compare with previous review: {e}")
+
+        # Add comparison section to executive summary
+        if previous_review_comparison:
+            executive_summary += f"""
+
+<details>
+<summary><strong>📈 Progress Since Last Review</strong> (Click to expand)</summary>
+
+{previous_review_comparison}
+
+*This comparison analyzes changes since the previous commit review to track issue resolution progress.*
+
+</details>
+"""
+
         consolidated_path = os.path.join(output_folder_path, "consolidated_executive_summary.md")
         with open(consolidated_path, 'w', encoding='utf-8') as f:
             f.write(executive_summary)
-        print(f"  Executive summary saved: consolidated_executive_summary.md")
+        print(f"  ✅ Executive summary saved: consolidated_executive_summary.md")
 
         json_path = os.path.join(output_folder_path, "consolidated_data.json")
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(consolidated_json, f, indent=2)
 
-        # Generate review_output.json for inline_comment.py compatibility
+        # Generate review_output.json for inline_comment.py compatibility with proper field mapping
+        criticals = []
+        for f in consolidated_json.get("detailed_findings", []):
+            if str(f.get("severity", "")).upper() == "CRITICAL":
+                critical = {
+                    "line": f.get("line_number", 1),
+                    "issue": f.get("finding", "Critical issue found"),
+                    "recommendation": f.get("recommendation", f.get("finding", "")),
+                    "severity": f.get("severity", "Critical")
+                }
+                criticals.append(critical)
+
         review_output_data = {
             "full_review": executive_summary,
             "full_review_markdown": executive_summary,
             "full_review_json": consolidated_json,
-            "criticals": [f for f in consolidated_json.get("detailed_findings", []) if str(f.get("severity", "")).upper() == "CRITICAL"],
+            "criticals": criticals,
             "file": processed_files[0] if processed_files else "unknown",
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "previous_comparison": previous_review_comparison
         }
-
-        # FIXED: Add line field to criticals for inline_comment.py compatibility
-        for critical in review_output_data["criticals"]:
-            if "line" not in critical:
-                critical["line"] = critical.get("line_number", 1)
 
         with open("review_output.json", "w", encoding='utf-8') as f:
             json.dump(review_output_data, f, indent=2, ensure_ascii=False)
-        print("  review_output.json saved for inline_comment.py compatibility")
+        print("  ✅ review_output.json saved for inline_comment.py compatibility")
+
+        # Store current review for future comparisons
+        if pull_request_number and pull_request_number != 0:
+            try:
+                insert_sql = """
+                    INSERT INTO CODE_REVIEW_LOG (PULL_REQUEST_NUMBER, COMMIT_SHA, REVIEW_SUMMARY)
+                    VALUES (?, ?, ?)
+                """
+                params = [pull_request_number, commit_sha, executive_summary[:10000]]  # Truncate for storage
+                session.sql(insert_sql, params=params).collect()
+                print(f"  ✅ Current review stored for future comparisons")
+            except Exception as e:
+                print(f"  Warning: Could not store review: {e}")
 
         if 'GITHUB_OUTPUT' in os.environ:
             delimiter = str(uuid.uuid4())
@@ -465,18 +555,20 @@ def main():
                 gh_out.write(f'consolidated_summary_text<<{delimiter}\n')
                 gh_out.write(f'{executive_summary}\n')
                 gh_out.write(f'{delimiter}\n')
-            print("  GitHub Actions output written")
+            print("  ✅ GitHub Actions output written")
 
-        print(f"\nTWO-STAGE ANALYSIS COMPLETED!")
+        print(f"\n🎉 TWO-STAGE ANALYSIS COMPLETED!")
         print("=" * 60)
-        print(f"Files processed: {len(processed_files)}")
-        print(f"Individual reviews: {len(all_individual_reviews)} (PROMPT 1)")
-        print(f"Executive summary: 1 (PROMPT 2)")
-        print(f"Quality Score: {consolidated_json.get('quality_score', 'N/A')}/100")
-        print(f"Findings: {len(consolidated_json.get('detailed_findings', []))}")
+        print(f"📁 Files processed: {len(processed_files)}")
+        print(f"🔍 Individual reviews: {len(all_individual_reviews)} (PROMPT 1)")
+        print(f"📊 Executive summary: 1 (PROMPT 2)")
+        print(f"🎯 Quality Score: {consolidated_json.get('quality_score', 'N/A')}/100")
+        print(f"📈 Findings: {len(consolidated_json.get('detailed_findings', []))}")
+        if previous_review_comparison:
+            print(f"🔄 Comparison with previous review: ✅ Generated")
         
     except Exception as e:
-        print(f"Consolidation error: {e}")
+        print(f"❌ Consolidation error: {e}")
         import traceback
         traceback.print_exc()
 
@@ -486,4 +578,4 @@ if __name__ == "__main__":
     finally:
         if 'session' in locals():
             session.close()
-            print("\nSession closed")
+            print("\n🔒 Session closed")
