@@ -21,19 +21,51 @@ jobs:
       - name: Generate PR Diff
         run: |
           BASE_BRANCH="${{ github.event.pull_request.base.ref || 'main' }}"
+          echo "Generating diff against $BASE_BRANCH"
+          
+          # Generate diff
           git diff origin/$BASE_BRANCH...HEAD > pr_changes.diff
           
+          # Check if diff has content
           if [ -s pr_changes.diff ]; then
             echo "Generated diff with $(wc -l < pr_changes.diff) lines"
+            echo "Files changed:"
+            git diff --name-only origin/$BASE_BRANCH...HEAD
           else
-            echo "No changes found, creating empty diff"
-            echo "# No changes to review" > pr_changes.diff
+            echo "No changes found - this might be a workflow_dispatch test"
+            # For testing purposes, create a sample diff
+            echo "diff --git a/scripts/simple_test.py b/scripts/simple_test.py" > pr_changes.diff
+            echo "index 1234567..abcdefg 100644" >> pr_changes.diff
+            echo "--- a/scripts/simple_test.py" >> pr_changes.diff
+            echo "+++ b/scripts/simple_test.py" >> pr_changes.diff
+            echo "@@ -1,3 +1,4 @@" >> pr_changes.diff
+            echo " def hello():" >> pr_changes.diff
+            echo "     print('hello')" >> pr_changes.diff
+            echo "+    # New comment added" >> pr_changes.diff
+            echo "     return True" >> pr_changes.diff
           fi
+          
+          echo "Diff content preview:"
+          head -20 pr_changes.diff
       
       - name: Split Diff into Chunks
         run: |
           mkdir -p chunks reviews
+          echo "Processing diff file..."
           python scripts/split_code_diff.py pr_changes.diff chunks/
+          
+          # Verify chunks were created
+          echo "Chunks directory contents:"
+          ls -la chunks/
+          
+          # Count actual files that will be reviewed
+          CHUNK_COUNT=$(find chunks/ -type f -name "*.py" -o -name "*.sql" -o -name "*diff*" | wc -l)
+          echo "Created $CHUNK_COUNT reviewable chunks"
+          
+          if [ $CHUNK_COUNT -eq 0 ]; then
+            echo "WARNING: No chunks created. Creating fallback content."
+            echo "No significant code changes detected" > chunks/no_changes.txt
+          fi
       
       - name: Review Code Changes
         run: python scripts/cortex_python_review.py chunks reviews ${{ github.event.number || '123' }} ${{ github.sha }}
