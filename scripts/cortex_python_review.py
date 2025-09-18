@@ -8,7 +8,9 @@ from datetime import datetime
 # Config
 # ---------------------
 MODEL = "openai-gpt-4.1"
+# Safety limit to keep prompts compact (from teammate's code)
 MAX_CHARS_FOR_FINAL_SUMMARY_FILE = 65000
+MAX_TOKENS_FOR_SUMMARY_INPUT = 100000
 
 # For single file testing (when not using directory mode)
 FILE_TO_REVIEW = "scripts/simple_test.py"
@@ -408,6 +410,7 @@ def main():
         print(f"  Combined reviews: {len(combined_reviews_json)} characters")
 
         consolidation_prompt = build_prompt_for_consolidated_summary(combined_reviews_json)
+        consolidation_prompt = consolidation_prompt.replace("{MAX_CHARS_FOR_FINAL_SUMMARY_FILE}", str(MAX_CHARS_FOR_FINAL_SUMMARY_FILE))
         consolidated_raw = review_with_cortex(MODEL, consolidation_prompt, session)
         
         try:
