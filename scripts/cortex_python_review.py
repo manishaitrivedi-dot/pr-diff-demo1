@@ -303,10 +303,16 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
     return display_text
 
 def main():
+    # FIXED: Handle command line arguments properly to avoid ValueError
     if len(sys.argv) >= 5:
         folder_path = sys.argv[1]
         output_folder_path = sys.argv[2]
-        pull_request_number = int(sys.argv[3])
+        # FIXED: Handle empty or invalid PR number gracefully
+        try:
+            pull_request_number = int(sys.argv[3]) if sys.argv[3] and sys.argv[3].strip() else None
+        except (ValueError, IndexError):
+            print(f"⚠️  Warning: Invalid or empty PR number '{sys.argv[3] if len(sys.argv) > 3 else 'None'}', using None")
+            pull_request_number = None
         commit_sha = sys.argv[4]
         directory_mode = True
     else:
