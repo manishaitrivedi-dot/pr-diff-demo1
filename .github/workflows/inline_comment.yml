@@ -57,80 +57,28 @@ jobs:
           echo "Generated directories:"
           echo "  Chunks: $DYNAMIC_OUTPUT_DIR"
           echo "  Reviews: $DYNAMIC_OUTPUT_REVIEW_DIR"
+
+      - name: Create Test Diff File
+        run: |
+          echo "Creating test diff for processing..."
+          mkdir -p test_chunks
           
-      - name: Force Create Test Diff (Temporary Fix)
-        run: |
-          echo "Creating test diff file with your simple_test.py content..."
-          cat > diff_code_to_review.txt << 'EOF'
-diff --git a/scripts/simple_test.py b/scripts/simple_test.py
-index 1234567..abcdefg 100644
---- a/scripts/simple_test.py
-+++ b/scripts/simple_test.py
-@@ -1,5 +1,10 @@
- import pandas as pd
- from datetime import datetime
- 
-+# Add numbers and return the result
-+def add_numbers(a, b):
-+    """Add two numbers together"""
-+    return a + b
-+
- # Read
- def read():
-@@ -15,6 +20,15 @@ def data_processor_function(data_input):
-     processed_data = data_using_method_1()
-     return processed_data
- 
-+def data_validation_function(data):
-+    """Validate data structure and content"""
-+    validated_results = {
-+        'is_valid': True,
-+        'message': 'All validation passed'
-+    }
-+    return validated_results
-+
- def string_manipulation_function(input_string):
-     """Process and manipulate input string"""
-     if not isinstance(input_string, str):
-         return result
-EOF
+          # Copy your Python files directly as chunks for processing
+          find . -name "*.py" -path "*/scripts/*" | head -3 | while read file; do
+            filename=$(basename "$file")
+            echo "Processing file: $file -> test_chunks/$filename"
+            cp "$file" "test_chunks/$filename"
+          done
           
-          echo "Test diff file created:"
-          ls -la diff_code_to_review.txt
-          echo "Content preview:"
-          head -c 500 diff_code_to_review.txt
-
-      - name: Upload diff as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pr-diff-file
-          path: diff_code_to_review.txt
-          retention-days: 7
-
-      - name: Check Diff File Token And Split
-        id: token_split
-        run: |
-          DYNAMIC_OUTPUT_DIR_NAME="${{ steps.generate_dir_name.outputs.DYNAMIC_OUTPUT_DIR_PATH }}"
-          echo "Splitting diff into chunks using directory: $DYNAMIC_OUTPUT_DIR_NAME"
-          python scripts/split_code_diff.py diff_code_to_review.txt "$DYNAMIC_OUTPUT_DIR_NAME"
-
-      - name: Verify files created by script
-        if: steps.token_split.outputs.files_created > 0
-        run: |
-          DYNAMIC_OUTPUT_DIR_NAME="${{ steps.generate_dir_name.outputs.DYNAMIC_OUTPUT_DIR_PATH }}"
-          echo "Chunks created successfully:"
-          ls -la "$DYNAMIC_OUTPUT_DIR_NAME"
-
-      - name: Upload diff chunks as artifact
-        if: steps.token_split.outputs.files_created > 0
-        uses: actions/upload-artifact@v4
-        with:
-          name: split-diff-chunks
-          path: ${{ steps.generate_dir_name.outputs.DYNAMIC_OUTPUT_DIR_PATH }}/
-          retention-days: 7
+          # Set the chunks directory to our test directory
+          echo "DYNAMIC_OUTPUT_DIR_PATH=test_chunks" >> "$GITHUB_OUTPUT"
+          
+          FILES_CREATED=$(ls test_chunks 2>/dev/null | wc -l)
+          echo "files_created=$FILES_CREATED" >> "$GITHUB_OUTPUT"
+          echo "Created $FILES_CREATED files for processing"
 
       - name: Run Executive Code Review
-        if: steps.token_split.outputs.files_created > 0
+        if: steps.create_test_files.outputs.files_created > 0
         id: executive_review
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -141,7 +89,7 @@ EOF
           SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
           SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
         run: |
-          DYNAMIC_OUTPUT_DIR_NAME="${{ steps.generate_dir_name.outputs.DYNAMIC_OUTPUT_DIR_PATH }}"
+          DYNAMIC_OUTPUT_DIR_NAME="test_chunks"
           DYNAMIC_OUTPUT_REVIEW_DIR_NAME="${{ steps.generate_dir_name.outputs.DYNAMIC_OUTPUT_REVIEW_DIR_PATH }}"
           
           echo "Running executive review:"
@@ -153,7 +101,7 @@ EOF
           python scripts/cortex_python_review.py "$DYNAMIC_OUTPUT_DIR_NAME" "$DYNAMIC_OUTPUT_REVIEW_DIR_NAME" "${{ github.event.pull_request.number }}" "${{ github.sha }}"
 
       - name: Upload review outputs as artifact
-        if: steps.token_split.outputs.files_created > 0
+        if: steps.create_test_files.outputs.files_created > 0
         uses: actions/upload-artifact@v4
         with:
           name: executive-review-outputs
@@ -161,52 +109,37 @@ EOF
           retention-days: 7
 
       - name: Post Executive Review Comment
-        if: github.event_name == 'pull_request' && steps.token_split.outputs.files_created > 0
+        if: github.event_name == 'pull_request'
         uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
           body-path: ${{ steps.generate_dir_name.outputs.DYNAMIC_OUTPUT_REVIEW_DIR_PATH }}/consolidated_executive_summary.md
 
       - name: Generate Inline Comments
-        if: github.event_name == 'pull_request' && steps.token_split.outputs.files_created > 0
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Processing inline comments..."
           if [ -f "review_output.json" ]; then
-            echo "Found review_output.json in root directory"
-            ls -la review_output.json
+            echo "Found review_output.json"
+            python scripts/inline_comment.py
           else
-            echo "review_output.json not found in root directory"
-            echo "Searching for JSON files..."
-            find . -name "*.json" -type f
+            echo "review_output.json not found - skipping inline comments"
           fi
-          python scripts/inline_comment.py
 
       - name: Final Summary
         if: always()
         run: |
           echo "=== PIPELINE EXECUTION SUMMARY ==="
-          echo "Files created by splitting: ${{ steps.token_split.outputs.files_created }}"
-          echo "Executive review completed: ${{ steps.executive_review.outcome }}"
           
-          DYNAMIC_OUTPUT_DIR_NAME="${{ steps.generate_dir_name.outputs.DYNAMIC_OUTPUT_DIR_PATH }}"
-          DYNAMIC_OUTPUT_REVIEW_DIR_NAME="${{ steps.generate_dir_name.outputs.DYNAMIC_OUTPUT_REVIEW_DIR_PATH }}"
-          
-          if [ -d "$DYNAMIC_OUTPUT_DIR_NAME" ]; then
-            echo "Chunk files created: $(ls $DYNAMIC_OUTPUT_DIR_NAME 2>/dev/null | wc -l)"
+          if [ -d "test_chunks" ]; then
+            echo "Chunk files processed: $(ls test_chunks 2>/dev/null | wc -l)"
           fi
           
+          DYNAMIC_OUTPUT_REVIEW_DIR_NAME="${{ steps.generate_dir_name.outputs.DYNAMIC_OUTPUT_REVIEW_DIR_PATH }}"
           if [ -d "$DYNAMIC_OUTPUT_REVIEW_DIR_NAME" ]; then
             echo "Review files created: $(ls $DYNAMIC_OUTPUT_REVIEW_DIR_NAME 2>/dev/null | wc -l)"
-            echo "Review files:"
-            ls -la "$DYNAMIC_OUTPUT_REVIEW_DIR_NAME" 2>/dev/null || echo "  (none)"
-          fi
-          
-          if [ -f "review_output.json" ]; then
-            echo "review_output.json found in root directory"
-          else
-            echo "review_output.json NOT found in root directory"
           fi
           
           echo "Pipeline execution completed!"
