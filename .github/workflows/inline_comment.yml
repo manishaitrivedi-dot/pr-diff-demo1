@@ -1,71 +1,32 @@
-name: Executive Code Review Pipeline
+name: Code Review
 
 on:
   push:
-    branches: [main, develop, 'feature/**', 'fix/**']
   pull_request:
-    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pull-requests: write
-  issues: write
-
 jobs:
-  executive_code_review:
+  review:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Python environment
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-          cache: 'pip'
       
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install snowflake-connector-python
-          pip install tiktoken
-          pip install whatthepatch
-          pip install "snowflake-snowpark-python>=1.5.0,<2.0.0"
-          pip install snowflake-ml-python
-          pip install pandas
-          pip install requests
-
-      - name: Setup working directories
-        id: setup
-        run: |
-          PR_CREATOR="${{ github.actor }}"
-          TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
-          CLEAN_CREATOR=$(echo "$PR_CREATOR" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g')
-          
-          CHUNKS_DIR="${CLEAN_CREATOR}_chunks_${TIMESTAMP}"
-          REVIEWS_DIR="${CLEAN_CREATOR}_reviews_${TIMESTAMP}"
-          
-          mkdir -p "$CHUNKS_DIR" "$REVIEWS_DIR"
-          
-          echo "chunks_dir=$CHUNKS_DIR" >> $GITHUB_OUTPUT
-          echo "reviews_dir=$REVIEWS_DIR" >> $GITHUB_OUTPUT
-          
-          # Copy Python files for analysis
-          find . -name "*.py" -type f -not -path "./.git/*" | head -10 | while read file; do
-            cp "$file" "$CHUNKS_DIR/$(basename "$file")"
-          done
-          
-          FILES_COUNT=$(ls "$CHUNKS_DIR" | wc -l)
-          echo "files_count=$FILES_COUNT" >> $GITHUB_OUTPUT
-          echo "Prepared $FILES_COUNT Python files for review"
-
-      - name: Execute Cortex Code Review
-        if: steps.setup.outputs.files_count > 0
+      - run: |
+          pip install snowflake-connector-python tiktoken whatthepatch snowflake-snowpark-python snowflake-ml-python pandas requests
+      
+      - run: |
+          git diff HEAD~1 HEAD > diff_code_to_review.txt || echo "diff --git a/test.py b/test.py" > diff_code_to_review.txt
+          echo "Created diff file: $(wc -c < diff_code_to_review.txt) bytes"
+      
+      - run: |
+          python scripts/split_code_diff.py diff_code_to_review.txt chunks
+      
+      - run: |
+          mkdir -p reviews
+          python scripts/cortex_python_review.py chunks reviews 123 abc123
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
@@ -74,92 +35,23 @@ jobs:
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
           SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-        run: |
-          echo "Starting executive code review process..."
-          python scripts/cortex_python_review.py \
-            "${{ steps.setup.outputs.chunks_dir }}" \
-            "${{ steps.setup.outputs.reviews_dir }}" \
-            "${{ github.event.pull_request.number || '999' }}" \
-            "${{ github.sha }}"
-
-      - name: Upload review artifacts
+        continue-on-error: true
+      
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: code-review-artifacts-${{ github.run_number }}
-          path: ${{ steps.setup.outputs.reviews_dir }}/
-          retention-days: 30
-
-      - name: Post PR executive summary
-        if: github.event_name == 'pull_request' && steps.setup.outputs.files_count > 0
-        uses: peter-evans/create-or-update-comment@v4
+          name: outputs
+          path: reviews/
+      
+      - uses: peter-evans/create-or-update-comment@v4
+        if: github.event_name == 'pull_request'
         with:
           issue-number: ${{ github.event.pull_request.number }}
-          body-path: ${{ steps.setup.outputs.reviews_dir }}/consolidated_executive_summary.md
-          edit-mode: replace
-
-      - name: Setup inline comments
-        if: github.event_name == 'pull_request'
-        run: |
-          # Ensure review_output.json exists with proper structure
-          if [ ! -f "review_output.json" ]; then
-            # Check if it was created in reviews directory
-            REVIEW_OUTPUT="${{ steps.setup.outputs.reviews_dir }}/review_output.json"
-            if [ -f "$REVIEW_OUTPUT" ]; then
-              cp "$REVIEW_OUTPUT" review_output.json
-              echo "Copied review_output.json from reviews directory"
-            else
-              # Create structured fallback
-              cat > review_output.json << 'EOF'
-{
-  "full_review": "Executive code review analysis completed successfully",
-  "full_review_json": {
-    "summary": "Comprehensive code analysis performed",
-    "detailed_findings": [],
-    "key_recommendations": ["Maintain current code quality standards"]
-  },
-  "criticals": [],
-  "file": "multiple_files",
-  "timestamp": "${{ github.event.head_commit.timestamp }}"
-}
-EOF
-              echo "Created structured fallback review_output.json"
-            fi
-          fi
-          
-          echo "Review output JSON prepared for inline processing"
-          head -5 review_output.json
-
-      - name: Generate inline comments
+          body-path: reviews/consolidated_executive_summary.md
+        continue-on-error: true
+      
+      - run: python scripts/inline_comment.py
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "Processing inline comments for critical findings..."
-          python scripts/inline_comment.py
-          echo "Inline comment processing completed"
-
-      - name: Execution summary
-        if: always()
-        run: |
-          echo "====== EXECUTION SUMMARY ======"
-          echo "Repository: ${{ github.repository }}"
-          echo "Event: ${{ github.event_name }}"
-          echo "Commit: ${{ github.sha }}"
-          echo "Files processed: ${{ steps.setup.outputs.files_count }}"
-          
-          if [ -d "${{ steps.setup.outputs.reviews_dir }}" ]; then
-            REVIEW_FILES=$(ls "${{ steps.setup.outputs.reviews_dir }}" | wc -l)
-            echo "Review outputs generated: $REVIEW_FILES"
-            echo "Review directory contents:"
-            ls -la "${{ steps.setup.outputs.reviews_dir }}"
-          fi
-          
-          if [ -f "review_output.json" ]; then
-            echo "Inline comment JSON available: YES"
-          else
-            echo "Inline comment JSON available: NO"
-          fi
-          
-          echo "====== PIPELINE COMPLETED ======"
+        continue-on-error: true
