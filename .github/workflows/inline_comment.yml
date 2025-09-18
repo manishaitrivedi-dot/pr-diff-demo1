@@ -2,11 +2,7 @@ name: Executive Code Review Pipeline
 
 on:
   push:
-    branches:
-      - main
-      - 'fix/**'
   pull_request:
-    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
@@ -52,27 +48,21 @@ jobs:
           
           echo "DYNAMIC_OUTPUT_DIR_PATH=$DYNAMIC_OUTPUT_DIR" >> "$GITHUB_OUTPUT"
           echo "DYNAMIC_OUTPUT_REVIEW_DIR_PATH=$DYNAMIC_OUTPUT_REVIEW_DIR" >> "$GITHUB_OUTPUT"
-          
-          echo "Generated directories:"
-          echo "  Chunks: $DYNAMIC_OUTPUT_DIR"
-          echo "  Reviews: $DYNAMIC_OUTPUT_REVIEW_DIR"
 
       - name: Create Test Files
         run: |
-          echo "Creating test files for processing..."
           mkdir -p test_chunks
-          
-          # Find Python files and copy them
           find . -name "*.py" -type f | head -5 | while read file; do
             filename=$(basename "$file")
-            echo "Processing: $file -> test_chunks/$filename"
             cp "$file" "test_chunks/$filename"
+            echo "Copied: $file -> test_chunks/$filename"
           done
-          
-          FILES_COUNT=$(ls test_chunks 2>/dev/null | wc -l)
+          FILES_COUNT=$(ls test_chunks | wc -l)
+          echo "FILES_COUNT=$FILES_COUNT" >> $GITHUB_ENV
           echo "Created $FILES_COUNT files for processing"
 
       - name: Run Executive Code Review
+        if: env.FILES_COUNT > 0
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
@@ -83,13 +73,11 @@ jobs:
           SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
         run: |
           DYNAMIC_OUTPUT_REVIEW_DIR_NAME="${{ steps.generate_dir_name.outputs.DYNAMIC_OUTPUT_REVIEW_DIR_PATH }}"
-          
           echo "Running executive review:"
           echo "  Input chunks: test_chunks"
           echo "  Output reviews: $DYNAMIC_OUTPUT_REVIEW_DIR_NAME"
-          echo "  PR number: ${{ github.event.pull_request.number || 'N/A' }}"
+          echo "  PR number: ${{ github.event.pull_request.number || '0' }}"
           echo "  Commit SHA: ${{ github.sha }}"
-          
           python scripts/cortex_python_review.py "test_chunks" "$DYNAMIC_OUTPUT_REVIEW_DIR_NAME" "${{ github.event.pull_request.number || '0' }}" "${{ github.sha }}"
 
       - name: Upload review outputs
@@ -101,7 +89,7 @@ jobs:
           retention-days: 7
 
       - name: Post PR Comment
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && env.FILES_COUNT > 0
         uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
@@ -109,7 +97,7 @@ jobs:
             ## Code Review Completed Successfully
             
             **Status:** Review analysis completed  
-            **Files Processed:** Python files from repository  
+            **Files Processed:** ${{ env.FILES_COUNT }} Python files
             **Timestamp:** ${{ steps.generate_dir_name.outputs.TIMESTAMP }}
             
             Detailed review artifacts have been generated and uploaded.
@@ -123,8 +111,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Processing inline comments..."
-          
-          # Create a basic review_output.json if it doesn't exist
           if [ ! -f "review_output.json" ]; then
             echo "Creating basic review output for inline comments..."
             cat > review_output.json << 'EOF'
@@ -140,7 +126,6 @@ jobs:
 }
 EOF
           fi
-          
           echo "Running inline comment script..."
           python scripts/inline_comment.py || echo "Inline comments completed with warnings"
 
@@ -148,21 +133,9 @@ EOF
         if: always()
         run: |
           echo "=== PIPELINE EXECUTION SUMMARY ==="
-          echo "Workflow completed successfully"
-          
-          if [ -d "test_chunks" ]; then
-            echo "Input files processed: $(ls test_chunks 2>/dev/null | wc -l)"
-          fi
-          
+          echo "Files processed: ${{ env.FILES_COUNT }}"
           REVIEW_DIR="${{ steps.generate_dir_name.outputs.DYNAMIC_OUTPUT_REVIEW_DIR_PATH }}"
           if [ -d "$REVIEW_DIR" ]; then
             echo "Review files created: $(ls $REVIEW_DIR 2>/dev/null | wc -l)"
-            echo "Review directory contents:"
-            ls -la "$REVIEW_DIR" 2>/dev/null || echo "Directory not accessible"
           fi
-          
-          if [ -f "review_output.json" ]; then
-            echo "review_output.json exists for inline comments"
-          fi
-          
-          echo "=== PIPELINE COMPLETED ==="
+          echo "Pipeline completed successfully"
