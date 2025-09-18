@@ -60,11 +60,45 @@ jobs:
           
       - name: Extract PR diff
         run: |
+          echo "Starting diff extraction..."
+          
           if [ "${{ github.event_name }}" == "pull_request" ]; then
             BASE_REF="${{ github.event.pull_request.base.ref }}"
             echo "PR event - Base ref: $BASE_REF"
             git fetch origin "$BASE_REF"
-            git diff origin/$BASE_REF...HEAD > diff_code_to_review.txt
+            
+            # Try multiple approaches to get the diff
+            echo "Attempting git diff approaches..."
+            
+            # Approach 1: Standard three-dot diff with file filter
+            git diff origin/$BASE_REF...HEAD -- "*.py" "*.sql" > diff_code_to_review.txt
+            DIFF_SIZE=$(wc -c < diff_code_to_review.txt)
+            echo "Approach 1 (filtered) result: $DIFF_SIZE bytes"
+            
+            # Approach 2: If empty, try without file filter
+            if [ "$DIFF_SIZE" -eq 0 ]; then
+              echo "Trying without file filter..."
+              git diff origin/$BASE_REF...HEAD > diff_code_to_review.txt
+              DIFF_SIZE=$(wc -c < diff_code_to_review.txt)
+              echo "Approach 2 (no filter) result: $DIFF_SIZE bytes"
+            fi
+            
+            # Approach 3: If still empty, try two-dot diff
+            if [ "$DIFF_SIZE" -eq 0 ]; then
+              echo "Trying two-dot diff..."
+              git diff origin/$BASE_REF..HEAD > diff_code_to_review.txt
+              DIFF_SIZE=$(wc -c < diff_code_to_review.txt)
+              echo "Approach 3 (two-dot) result: $DIFF_SIZE bytes"
+            fi
+            
+            # Approach 4: If still empty, try commit range
+            if [ "$DIFF_SIZE" -eq 0 ]; then
+              echo "Trying HEAD~1 diff..."
+              git diff HEAD~1 HEAD > diff_code_to_review.txt
+              DIFF_SIZE=$(wc -c < diff_code_to_review.txt)
+              echo "Approach 4 (HEAD~1) result: $DIFF_SIZE bytes"
+            fi
+            
           else
             BASE_REF="${{ github.event.inputs.base_branch || 'main' }}"
             echo "Push/Manual event - Base ref: $BASE_REF"
@@ -72,10 +106,18 @@ jobs:
             git diff origin/"$BASE_REF" HEAD > diff_code_to_review.txt
           fi
           
-          echo "Diff generated successfully:"
-          ls -l diff_code_to_review.txt
-          echo "First 500 chars of diff:"
-          head -c 500 diff_code_to_review.txt
+          FINAL_SIZE=$(wc -c < diff_code_to_review.txt)
+          echo "Final diff file size: $FINAL_SIZE bytes"
+          
+          if [ "$FINAL_SIZE" -gt 0 ]; then
+            echo "Diff extraction successful"
+            echo "First 500 characters:"
+            head -c 500 diff_code_to_review.txt
+          else
+            echo "Warning: No diff content found"
+            echo "Checking for changed files..."
+            git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD || true
+          fi
 
       - name: Upload diff as artifact
         uses: actions/upload-artifact@v4
