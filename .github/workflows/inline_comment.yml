@@ -147,7 +147,7 @@ jobs:
         uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
-          body: ${{ steps.executive_review.outputs.consolidated_summary_text }}
+          body-path: ${{ steps.generate_dirs.outputs.REVIEWS_DIR_PATH }}/consolidated_executive_summary.md
 
       - name: Generate Inline Comments
         if: github.event_name == 'pull_request' && steps.split_diff.outputs.files_created > 0
@@ -155,10 +155,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Processing inline comments..."
-          # Copy the review output to expected location for inline_comment.py
-          REVIEWS_DIR="${{ steps.generate_dirs.outputs.REVIEWS_DIR_PATH }}"
-          if [ -f "$REVIEWS_DIR/executive_review_output.json" ]; then
-            cp "$REVIEWS_DIR/executive_review_output.json" review_output.json
+          # The review_output.json is created in the root directory by the Python script
+          if [ -f "review_output.json" ]; then
+            echo "Found review_output.json in root directory"
+            ls -la review_output.json
+          else
+            echo "review_output.json not found in root directory"
+            echo "Searching for JSON files..."
+            find . -name "*.json" -type f
           fi
           python scripts/inline_comment.py
 
@@ -180,6 +184,13 @@ jobs:
             echo "Review files created: $(ls $REVIEWS_DIR 2>/dev/null | wc -l)"
             echo "Review files:"
             ls -la "$REVIEWS_DIR" 2>/dev/null || echo "  (none)"
+          fi
+          
+          # Check if review_output.json exists in root
+          if [ -f "review_output.json" ]; then
+            echo "review_output.json found in root directory"
+          else
+            echo "review_output.json NOT found in root directory"
           fi
           
           echo "Pipeline execution completed!"
