@@ -452,6 +452,11 @@ def main():
             "timestamp": datetime.now().isoformat()
         }
 
+        # FIXED: Add line field to criticals for inline_comment.py compatibility
+        for critical in review_output_data["criticals"]:
+            if "line" not in critical:
+                critical["line"] = critical.get("line_number", 1)
+
         with open("review_output.json", "w", encoding='utf-8') as f:
             json.dump(review_output_data, f, indent=2, ensure_ascii=False)
         print("  ✅ review_output.json saved for inline_comment.py compatibility")
