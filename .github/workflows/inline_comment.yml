@@ -19,26 +19,14 @@ jobs:
       
       - run: |
           mkdir -p chunks
-          echo "Copying files with content verification:"
-          if [ -f "scripts/simple_test.py" ]; then
-            cp scripts/simple_test.py chunks/
-            echo "simple_test.py size: $(wc -c < chunks/simple_test.py) bytes"
-            echo "First 200 chars of simple_test.py:"
-            head -c 200 chunks/simple_test.py
-          else
-            echo "simple_test.py not found in scripts/"
-          fi
-          
           find scripts/ -name "*.py" -type f | head -5 | while read file; do
             cp "$file" chunks/
-            echo "Copied: $file ($(wc -c < "$file") bytes)"
+            echo "Copied: $file"
           done
+          ls -la chunks/
       
       - run: |
           mkdir -p reviews
-          echo "Files being processed:"
-          ls -la chunks/
-          echo "Running cortex review..."
           python scripts/cortex_python_review.py chunks reviews 123 abc123
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -57,35 +45,17 @@ jobs:
           path: reviews/
       
       - run: |
-          echo "Fixing review_output.json structure..."
           if [ -f "review_output.json" ]; then
-            python3 -c "
-import json
-try:
-    with open('review_output.json', 'r') as f:
-        data = json.load(f)
-    
-    # Add missing 'line' field to critical findings
-    if 'criticals' in data and isinstance(data['criticals'], list):
-        for critical in data['criticals']:
-            if isinstance(critical, dict):
-                if 'line' not in critical:
-                    critical['line'] = 1
-                if 'line_number' in critical and 'line' not in critical:
-                    critical['line'] = critical['line_number']
-                    
-    with open('review_output.json', 'w') as f:
-        json.dump(data, f, indent=2)
-    print('Fixed JSON structure')
-except Exception as e:
-    print(f'JSON fix failed: {e}')
-"
-          else
-            echo "review_output.json not found"
+            echo "Fixing JSON structure with sed..."
+            # Simple text replacement to add line field if missing
+            sed -i 's/"issue"/"line": 1, "issue"/g' review_output.json
+            sed -i 's/"recommendation"/"line": 1, "recommendation"/g' review_output.json
+            sed -i 's/"severity": "Critical"/"line": 1, "severity": "Critical"/g' review_output.json
+            echo "JSON structure fixed"
           fi
         continue-on-error: true
 
-      - run: python scripts/inline_comment.py || echo "Inline completed"
+      - run: python scripts/inline_comment.py
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
