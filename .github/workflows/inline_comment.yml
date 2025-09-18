@@ -1,13 +1,12 @@
-name: Cortex Code Review
+name: Executive Code Review Pipeline
+
 on:
   pull_request:
-    branches:
-      - main
     types: [opened, synchronize, reopened]
+    paths: ['**.py', '**.sql']
   push:
     branches:
       - main
-      - 'fix/simple-test'
       - 'fix/**'
   workflow_dispatch:
 
@@ -17,23 +16,104 @@ permissions:
   issues: write
 
 jobs:
-  review:
+  executive_code_review:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
-        
-      - name: Setup Python
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.x"
-          
+          python-version: '3.11'
+      
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install requests snowflake-snowpark-python pandas
+          pip install snowflake-connector-python
+          pip install tiktoken
+          pip install whatthepatch
+          pip install "snowflake-snowpark-python>=1.5.0,<2.0.0"
+          pip install snowflake-ml-python
+          pip install pandas
+          pip install requests
+
+      - name: Generate Dynamic Output Directory Names
+        id: generate_dirs
+        run: |
+          PR_CREATOR="${{ github.actor }}"
+          PR_CREATOR_CLEANED=$(echo "$PR_CREATOR" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g')
+          TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
           
-      - name: Run Cortex code review
+          CHUNKS_DIR="${PR_CREATOR_CLEANED}_chunks_${TIMESTAMP}"
+          REVIEWS_DIR="${PR_CREATOR_CLEANED}_reviews_${TIMESTAMP}"
+          
+          echo "CHUNKS_DIR_PATH=$CHUNKS_DIR" >> "$GITHUB_OUTPUT"
+          echo "REVIEWS_DIR_PATH=$REVIEWS_DIR" >> "$GITHUB_OUTPUT"
+          
+          echo "Generated directories:"
+          echo "  Chunks: $CHUNKS_DIR"
+          echo "  Reviews: $REVIEWS_DIR"
+          
+      - name: Extract PR diff
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            BASE_REF="${{ github.event.pull_request.base.ref }}"
+            echo "PR event - Base ref: $BASE_REF"
+            git fetch origin "$BASE_REF"
+            git diff origin/$BASE_REF...HEAD > diff_code_to_review.txt
+          else
+            BASE_REF="${{ github.event.inputs.base_branch || 'main' }}"
+            echo "Push/Manual event - Base ref: $BASE_REF"
+            git fetch origin "$BASE_REF"
+            git diff origin/"$BASE_REF" HEAD > diff_code_to_review.txt
+          fi
+          
+          echo "Diff generated successfully:"
+          ls -l diff_code_to_review.txt
+          echo "First 500 chars of diff:"
+          head -c 500 diff_code_to_review.txt
+
+      - name: Upload diff as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-diff-file
+          path: diff_code_to_review.txt
+          retention-days: 7
+
+      - name: Split diff into chunks
+        id: split_diff
+        run: |
+          CHUNKS_DIR="${{ steps.generate_dirs.outputs.CHUNKS_DIR_PATH }}"
+          echo "Splitting diff into chunks using directory: $CHUNKS_DIR"
+          python scripts/split_code_diff.py diff_code_to_review.txt "$CHUNKS_DIR"
+          
+          # Verify chunks were created
+          if [ -d "$CHUNKS_DIR" ] && [ "$(ls -A $CHUNKS_DIR)" ]; then
+            echo "Chunks created successfully:"
+            ls -la "$CHUNKS_DIR"
+            FILES_CREATED=$(ls "$CHUNKS_DIR" | wc -l)
+            echo "files_created=$FILES_CREATED" >> "$GITHUB_OUTPUT"
+            echo "Total files created: $FILES_CREATED"
+          else
+            echo "No chunks created - directory is empty"
+            echo "files_created=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload diff chunks as artifact
+        if: steps.split_diff.outputs.files_created > 0
+        uses: actions/upload-artifact@v4
+        with:
+          name: split-diff-chunks
+          path: ${{ steps.generate_dirs.outputs.CHUNKS_DIR_PATH }}/
+          retention-days: 7
+
+      - name: Run Executive Code Review
+        if: steps.split_diff.outputs.files_created > 0
+        id: executive_review
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
@@ -42,9 +122,64 @@ jobs:
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
           SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-        run: python scripts/cortex_python_review.py
+        run: |
+          CHUNKS_DIR="${{ steps.generate_dirs.outputs.CHUNKS_DIR_PATH }}"
+          REVIEWS_DIR="${{ steps.generate_dirs.outputs.REVIEWS_DIR_PATH }}"
+          
+          echo "Running executive review:"
+          echo "  Input chunks: $CHUNKS_DIR"
+          echo "  Output reviews: $REVIEWS_DIR"
+          echo "  PR number: ${{ github.event.pull_request.number }}"
+          echo "  Commit SHA: ${{ github.sha }}"
+          
+          python scripts/cortex_python_review.py "$CHUNKS_DIR" "$REVIEWS_DIR" "${{ github.event.pull_request.number }}" "${{ github.sha }}"
 
-      - name: Post inline comments
+      - name: Upload review outputs as artifact
+        if: steps.split_diff.outputs.files_created > 0
+        uses: actions/upload-artifact@v4
+        with:
+          name: executive-review-outputs
+          path: ${{ steps.generate_dirs.outputs.REVIEWS_DIR_PATH }}/
+          retention-days: 7
+
+      - name: Post Executive Review Comment
+        if: github.event_name == 'pull_request' && steps.split_diff.outputs.files_created > 0
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: ${{ steps.executive_review.outputs.consolidated_summary_text }}
+
+      - name: Generate Inline Comments
+        if: github.event_name == 'pull_request' && steps.split_diff.outputs.files_created > 0
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python scripts/inline_comment.py
+        run: |
+          echo "Processing inline comments..."
+          # Copy the review output to expected location for inline_comment.py
+          REVIEWS_DIR="${{ steps.generate_dirs.outputs.REVIEWS_DIR_PATH }}"
+          if [ -f "$REVIEWS_DIR/executive_review_output.json" ]; then
+            cp "$REVIEWS_DIR/executive_review_output.json" review_output.json
+          fi
+          python scripts/inline_comment.py
+
+      - name: Final Summary
+        if: always()
+        run: |
+          echo "=== PIPELINE EXECUTION SUMMARY ==="
+          echo "Files created by splitting: ${{ steps.split_diff.outputs.files_created }}"
+          echo "Executive review completed: ${{ steps.executive_review.outcome }}"
+          
+          CHUNKS_DIR="${{ steps.generate_dirs.outputs.CHUNKS_DIR_PATH }}"
+          REVIEWS_DIR="${{ steps.generate_dirs.outputs.REVIEWS_DIR_PATH }}"
+          
+          if [ -d "$CHUNKS_DIR" ]; then
+            echo "Chunk files created: $(ls $CHUNKS_DIR 2>/dev/null | wc -l)"
+          fi
+          
+          if [ -d "$REVIEWS_DIR" ]; then
+            echo "Review files created: $(ls $REVIEWS_DIR 2>/dev/null | wc -l)"
+            echo "Review files:"
+            ls -la "$REVIEWS_DIR" 2>/dev/null || echo "  (none)"
+          fi
+          
+          echo "Pipeline execution completed!"
