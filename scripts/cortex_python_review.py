@@ -8,11 +8,8 @@ from datetime import datetime
 # Config
 # ---------------------
 MODEL = "openai-gpt-4.1"
-# Safety limit to keep prompts compact 
 MAX_CHARS_FOR_FINAL_SUMMARY_FILE = 65000
 MAX_TOKENS_FOR_SUMMARY_INPUT = 100000
-
-# For single file testing (when not using directory mode)
 FILE_TO_REVIEW = "scripts/simple_test.py"
 
 # ---------------------
@@ -30,7 +27,7 @@ cfg = {
 session = Session.builder.configs(cfg).create()
 
 # ---------------------
-# PROMPT 1: Individual File Review
+# PROMPT TEMPLATES
 # ---------------------
 PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level Python code reviewer. Your review must be concise, accurate, and directly actionable, as it will be posted as a GitHub Pull Request comment.
 
@@ -92,9 +89,6 @@ Your entire response MUST be under 65,000 characters. Prioritize findings with H
 {PY_CONTENT}
 """
 
-# ---------------------
-# PROMPT 2: Consolidation
-# ---------------------
 PROMPT_TEMPLATE_CONSOLIDATED = """
 You are an expert code review summarization engine for executive-level reporting. Your task is to analyze individual code reviews and generate a single, consolidated executive summary with business impact focus.
 
@@ -126,6 +120,10 @@ Follow these instructions to populate the JSON fields:
          -   **`dependency_risks`**: Array of dependency-related risks.
 9.  **`strategic_recommendations` (array of strings):** Provide 2-3 high-level, actionable recommendations for technical leadership.
 10. **`immediate_actions` (array of strings):** List critical items requiring immediate attention.
+11. **`previous_issues_resolved` (array of objects):** For each issue from previous review, indicate status:
+         -   **`original_issue`**: Brief description of the previous issue
+         -   **`status`**: "RESOLVED", "PARTIALLY_RESOLVED", "NOT_ADDRESSED", or "WORSENED"
+         -   **`details`**: Explanation of current status
 
 **CRITICAL INSTRUCTION FOR LARGE REVIEWS:**
 Your entire response MUST be under {MAX_CHARS_FOR_FINAL_SUMMARY_FILE} characters. If the number of findings is very large, you MUST prioritize.
@@ -137,29 +135,44 @@ Here are the individual code reviews to process:
 {ALL_REVIEWS_CONTENT}
 """
 
+PROMPT_TEMPLATE_WITH_CONTEXT = """
+You are reviewing subsequent commits for Pull Request #{pr_number}. 
+
+PREVIOUS REVIEW SUMMARY AND FINDINGS:
+{previous_context}
+
+CRITICAL INSTRUCTION: You must analyze the new code changes with full awareness of the previous feedback. Specifically:
+1. Check if previous Critical/High severity issues were addressed in the new code
+2. Identify if any previous recommendations were implemented
+3. Note any new issues that may have been introduced
+4. Maintain continuity with previous review comments
+5. In the "previous_issues_resolved" section, provide specific status for each previous issue
+
+{consolidated_template}
+"""
+
 def build_prompt_for_individual_review(code_text: str, filename: str = "code_file") -> str:
     prompt = PROMPT_TEMPLATE_INDIVIDUAL.replace("{PY_CONTENT}", code_text)
     prompt = prompt.replace("{filename}", filename)
     return prompt
 
-def build_prompt_for_consolidated_summary(all_reviews_content: str) -> str:
-    return PROMPT_TEMPLATE_CONSOLIDATED.replace("{ALL_REVIEWS_CONTENT}", all_reviews_content)
+def build_prompt_for_consolidated_summary(all_reviews_content: str, previous_context: str = None, pr_number: int = None) -> str:
+    if previous_context and pr_number:
+        prompt = PROMPT_TEMPLATE_WITH_CONTEXT.replace("{previous_context}", previous_context)
+        prompt = prompt.replace("{pr_number}", str(pr_number))
+        prompt = prompt.replace("{consolidated_template}", PROMPT_TEMPLATE_CONSOLIDATED)
+        prompt = prompt.replace("{ALL_REVIEWS_CONTENT}", all_reviews_content)
+    else:
+        prompt = PROMPT_TEMPLATE_CONSOLIDATED.replace("{ALL_REVIEWS_CONTENT}", all_reviews_content)
+    return prompt
 
 def review_with_cortex(model, prompt_text: str, session) -> str:
     try:
         clean_prompt = prompt_text.replace("'", "''").replace("\\", "\\\\")
-        
-        query = f"""
-            SELECT SNOWFLAKE.CORTEX.COMPLETE(
-                '{model}',
-                '{clean_prompt}'
-            ) as response
-        """
-        
+        query = f"SELECT SNOWFLAKE.CORTEX.COMPLETE('{model}', '{clean_prompt}') as response"
         df = session.sql(query)
         result = df.collect()[0][0]
         return result
-        
     except Exception as e:
         print(f"Error calling Cortex complete for model '{model}': {e}", file=sys.stderr)
         return f"ERROR: Could not get response from Cortex. Reason: {e}"
@@ -199,6 +212,7 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
     metrics = json_response.get("metrics", {})
     strategic_recs = json_response.get("strategic_recommendations", [])
     immediate_actions = json_response.get("immediate_actions", [])
+    previous_issues = json_response.get("previous_issues_resolved", [])
     
     critical_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "CRITICAL")
     high_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "HIGH")
@@ -233,26 +247,26 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 
 """
 
-    if metrics:
-        loc = metrics.get("lines_of_code", "N/A")
-        complexity = metrics.get("complexity_score", "N/A")
-        coverage_gaps = len(metrics.get("code_coverage_gaps", []))
-        dep_risks = len(metrics.get("dependency_risks", []))
-        
-        display_text += f"""## 📊 Technical Metrics
+    # Add previous issues resolution status
+    if previous_issues:
+        display_text += """<details>
+<summary><strong>📈 Previous Issues Resolution Status</strong> (Click to expand)</summary>
 
-| Metric | Value | Assessment |
-|--------|-------|------------|
-| **Lines of Code** | {loc} | {'🟢 Manageable' if isinstance(loc, int) and loc < 500 else '🟡 Monitor'} |
-| **Complexity** | {complexity} | {risk_emoji.get(complexity, "🟡")} |
-| **Coverage Gaps** | {coverage_gaps} areas | {'🟢 Good' if coverage_gaps < 3 else '🟡 Needs attention'} |
-| **Dependency Risks** | {dep_risks} items | {'🟢 Low risk' if dep_risks < 3 else '🟡 Monitor'} |
-
+| Previous Issue | Status | Details |
+|----------------|--------|---------|
 """
+        for issue in previous_issues:
+            status = issue.get("status", "UNKNOWN")
+            status_emoji = {"RESOLVED": "✅", "PARTIALLY_RESOLVED": "⚠️", "NOT_ADDRESSED": "❌", "WORSENED": "🔴"}.get(status, "❓")
+            original = issue.get("original_issue", "")[:80]
+            details = issue.get("details", "")[:100]
+            display_text += f"| {original}... | {status_emoji} {status} | {details}... |\n"
+        
+        display_text += "\n</details>\n\n"
 
     if findings:
         display_text += """<details>
-<summary><strong>🔍 Detailed Technical Findings</strong> (Click to expand)</summary>
+<summary><strong>🔍 Current Review Findings</strong> (Click to expand)</summary>
 
 | Priority | File | Line | Issue | Business Impact |
 |----------|------|------|-------|-----------------|
@@ -275,10 +289,8 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
         display_text += "\n</details>\n\n"
 
     if strategic_recs:
-        display_text += """## 🎯 Strategic Recommendations
-
-<details>
-<summary><strong>💡 Leadership Actions</strong> (Click to expand)</summary>
+        display_text += """<details>
+<summary><strong>🎯 Strategic Recommendations</strong> (Click to expand)</summary>
 
 """
         for i, rec in enumerate(strategic_recs, 1):
@@ -286,10 +298,8 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
         display_text += "\n</details>\n\n"
 
     if immediate_actions:
-        display_text += """## ⚡ Immediate Actions Required
-
-<details>
-<summary><strong>🚨 Critical Tasks</strong> (Click to expand)</summary>
+        display_text += """<details>
+<summary><strong>⚡ Immediate Actions Required</strong> (Click to expand)</summary>
 
 """
         for i, action in enumerate(immediate_actions, 1):
@@ -305,11 +315,9 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
     return display_text
 
 def main():
-    # FIXED: Handle command line arguments properly to avoid ValueError
     if len(sys.argv) >= 5:
         folder_path = sys.argv[1]
         output_folder_path = sys.argv[2]
-        # FIXED: Handle empty or invalid PR number gracefully
         try:
             pull_request_number = int(sys.argv[3]) if sys.argv[3] and sys.argv[3].strip() else None
         except (ValueError, IndexError):
@@ -406,10 +414,48 @@ def main():
         return
 
     try:
+        # CRITICAL: Retrieve previous review context BEFORE generating new review
+        previous_review_context = None
+        if pull_request_number and pull_request_number != 0:
+            try:
+                create_table_query = """
+                CREATE TABLE IF NOT EXISTS CODE_REVIEW_LOG (
+                    REVIEW_ID INTEGER AUTOINCREMENT START 1 INCREMENT 1,
+                    PULL_REQUEST_NUMBER INTEGER,
+                    COMMIT_SHA VARCHAR(40),
+                    REVIEW_SUMMARY VARCHAR,
+                    DETAILED_FINDINGS VARIANT,
+                    REVIEW_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+                );
+                """
+                session.sql(create_table_query).collect()
+                
+                query = f"""
+                    SELECT REVIEW_SUMMARY, DETAILED_FINDINGS FROM CODE_REVIEW_LOG 
+                    WHERE PULL_REQUEST_NUMBER = {pull_request_number}
+                    ORDER BY REVIEW_TIMESTAMP DESC 
+                    LIMIT 1
+                """
+                result = session.sql(query).collect()
+                
+                if result:
+                    previous_review_context = result[0]["REVIEW_SUMMARY"][:3000]  # Truncate for prompt
+                    print("  📋 Retrieved previous review context - this is a subsequent commit review")
+                else:
+                    print("  📋 No previous review found - this is the initial commit review")
+                    
+            except Exception as e:
+                print(f"  Warning: Could not retrieve previous review: {e}")
+
         combined_reviews_json = json.dumps(all_individual_reviews, indent=2)
         print(f"  Combined reviews: {len(combined_reviews_json)} characters")
 
-        consolidation_prompt = build_prompt_for_consolidated_summary(combined_reviews_json)
+        # Generate consolidation prompt with or without previous context
+        consolidation_prompt = build_prompt_for_consolidated_summary(
+            combined_reviews_json, 
+            previous_review_context, 
+            pull_request_number
+        )
         consolidation_prompt = consolidation_prompt.replace("{MAX_CHARS_FOR_FINAL_SUMMARY_FILE}", str(MAX_CHARS_FOR_FINAL_SUMMARY_FILE))
         consolidated_raw = review_with_cortex(MODEL, consolidation_prompt, session)
         
@@ -428,79 +474,12 @@ def main():
                     "business_impact": "MEDIUM",
                     "detailed_findings": [],
                     "strategic_recommendations": [],
-                    "immediate_actions": []
+                    "immediate_actions": [],
+                    "previous_issues_resolved": []
                 }
 
         executive_summary = format_executive_pr_display(consolidated_json, processed_files)
         
-        # ADDED: Compare with previous review if this is a subsequent commit
-        previous_review_comparison = None
-        if pull_request_number and pull_request_number != 0:
-            try:
-                # Setup table if it doesn't exist
-                create_table_query = """
-                CREATE TABLE IF NOT EXISTS CODE_REVIEW_LOG (
-                    REVIEW_ID INTEGER AUTOINCREMENT START 1 INCREMENT 1,
-                    PULL_REQUEST_NUMBER INTEGER,
-                    COMMIT_SHA VARCHAR(40),
-                    REVIEW_SUMMARY VARCHAR,
-                    REVIEW_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-                );
-                """
-                session.sql(create_table_query).collect()
-                
-                # Check for previous reviews
-                query = f"""
-                    SELECT REVIEW_SUMMARY FROM CODE_REVIEW_LOG 
-                    WHERE PULL_REQUEST_NUMBER = {pull_request_number}
-                    ORDER BY REVIEW_TIMESTAMP DESC 
-                    LIMIT 2
-                """
-                result = session.sql(query).collect()
-                
-                if len(result) >= 1:
-                    previous_review = result[0]["REVIEW_SUMMARY"][:3000]
-                    current_review = executive_summary[:3000]
-                    
-                    comparison_prompt = f"""Compare the previous and current code reviews and identify what issues were resolved or improved. Be specific about which issues were addressed.
-
-PREVIOUS REVIEW:
-{previous_review}
-
-CURRENT REVIEW:  
-{current_review}
-
-Respond in this format:
-**Issues Resolved Since Last Review:**
-- [Specific issue]: ✅ Resolved / ⚠️ Partially Resolved / ❌ Not Addressed
-
-**New Issues Identified:**
-- [New issue found in current review]
-
-**Overall Progress:** Brief summary of improvement or regression
-"""
-                    
-                    comparison_result = review_with_cortex(MODEL, comparison_prompt, session)
-                    previous_review_comparison = comparison_result
-                    print("  ✅ Generated comparison with previous review")
-                    
-            except Exception as e:
-                print(f"  Warning: Could not compare with previous review: {e}")
-
-        # Add comparison section to executive summary
-        if previous_review_comparison:
-            executive_summary += f"""
-
-<details>
-<summary><strong>📈 Progress Since Last Review</strong> (Click to expand)</summary>
-
-{previous_review_comparison}
-
-*This comparison analyzes changes since the previous commit review to track issue resolution progress.*
-
-</details>
-"""
-
         consolidated_path = os.path.join(output_folder_path, "consolidated_executive_summary.md")
         with open(consolidated_path, 'w', encoding='utf-8') as f:
             f.write(executive_summary)
@@ -510,7 +489,7 @@ Respond in this format:
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(consolidated_json, f, indent=2)
 
-        # Generate review_output.json for inline_comment.py compatibility with proper field mapping
+        # Generate review_output.json for inline_comment.py compatibility
         criticals = []
         for f in consolidated_json.get("detailed_findings", []):
             if str(f.get("severity", "")).upper() == "CRITICAL":
@@ -528,8 +507,7 @@ Respond in this format:
             "full_review_json": consolidated_json,
             "criticals": criticals,
             "file": processed_files[0] if processed_files else "unknown",
-            "timestamp": datetime.now().isoformat(),
-            "previous_comparison": previous_review_comparison
+            "timestamp": datetime.now().isoformat()
         }
 
         with open("review_output.json", "w", encoding='utf-8') as f:
@@ -540,10 +518,15 @@ Respond in this format:
         if pull_request_number and pull_request_number != 0:
             try:
                 insert_sql = """
-                    INSERT INTO CODE_REVIEW_LOG (PULL_REQUEST_NUMBER, COMMIT_SHA, REVIEW_SUMMARY)
-                    VALUES (?, ?, ?)
+                    INSERT INTO CODE_REVIEW_LOG (PULL_REQUEST_NUMBER, COMMIT_SHA, REVIEW_SUMMARY, DETAILED_FINDINGS)
+                    VALUES (?, ?, ?, PARSE_JSON(?))
                 """
-                params = [pull_request_number, commit_sha, executive_summary[:10000]]  # Truncate for storage
+                params = [
+                    pull_request_number, 
+                    commit_sha, 
+                    executive_summary[:8000],  # Truncate for storage
+                    json.dumps(consolidated_json.get("detailed_findings", []))
+                ]
                 session.sql(insert_sql, params=params).collect()
                 print(f"  ✅ Current review stored for future comparisons")
             except Exception as e:
@@ -564,8 +547,10 @@ Respond in this format:
         print(f"📊 Executive summary: 1 (PROMPT 2)")
         print(f"🎯 Quality Score: {consolidated_json.get('quality_score', 'N/A')}/100")
         print(f"📈 Findings: {len(consolidated_json.get('detailed_findings', []))}")
-        if previous_review_comparison:
-            print(f"🔄 Comparison with previous review: ✅ Generated")
+        if previous_review_context:
+            print(f"🔄 Previous context included: ✅ Subsequent commit review")
+        else:
+            print(f"🔄 Previous context: ❌ Initial commit review")
         
     except Exception as e:
         print(f"❌ Consolidation error: {e}")
