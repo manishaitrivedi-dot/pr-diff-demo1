@@ -8,7 +8,7 @@ from datetime import datetime
 # Config
 # ---------------------
 MODEL = "openai-gpt-4.1"
-# Safety limit to keep prompts compact (from teammate's code)
+# Safety limit to keep prompts compact 
 MAX_CHARS_FOR_FINAL_SUMMARY_FILE = 65000
 MAX_TOKENS_FOR_SUMMARY_INPUT = 100000
 
