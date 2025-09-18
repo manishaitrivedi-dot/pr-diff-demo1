@@ -14,19 +14,13 @@ jobs:
         with:
           python-version: '3.11'
       
-      - run: |
-          pip install snowflake-connector-python tiktoken whatthepatch snowflake-snowpark-python snowflake-ml-python pandas requests
+      - run: pip install snowflake-connector-python tiktoken whatthepatch snowflake-snowpark-python snowflake-ml-python pandas requests
       
       - run: |
-          mkdir -p chunks
-          find scripts/ -name "*.py" -type f | head -5 | while read file; do
-            cp "$file" chunks/
-          done
-          ls -la chunks/
+          mkdir chunks reviews
+          cp scripts/*.py chunks/
       
-      - run: |
-          mkdir -p reviews
-          python scripts/cortex_python_review.py chunks reviews 123 abc123
+      - run: python scripts/cortex_python_review.py chunks reviews 123 abc123
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
@@ -35,7 +29,6 @@ jobs:
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
           SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-        continue-on-error: true
       
       - uses: actions/upload-artifact@v4
         if: always()
@@ -43,38 +36,6 @@ jobs:
           name: outputs
           path: reviews/
       
-      - run: |
-          echo "Creating review_output.json..."
-          if [ ! -f "review_output.json" ]; then
-            cat > review_output.json << 'EOF'
-{
-  "full_review": "Code review completed successfully",
-  "full_review_json": {
-    "summary": "Analysis completed",
-    "detailed_findings": [
-      {
-        "severity": "Critical",
-        "line": 15,
-        "issue": "Security vulnerability detected",
-        "recommendation": "Fix security issue"
-      }
-    ]
-  },
-  "criticals": [
-    {
-      "line": 15,
-      "issue": "Security vulnerability detected",
-      "recommendation": "Fix security issue",
-      "severity": "Critical"
-    }
-  ],
-  "file": "simple_test.py"
-}
-EOF
-            echo "Created review_output.json"
-          fi
-        continue-on-error: true
-
       - run: python scripts/inline_comment.py
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
