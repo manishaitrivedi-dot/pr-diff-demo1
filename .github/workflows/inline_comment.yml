@@ -18,7 +18,7 @@ jobs:
           pip install snowflake-connector-python tiktoken whatthepatch snowflake-snowpark-python snowflake-ml-python pandas requests
       
       - run: |
-          git diff HEAD~1 HEAD > diff_code_to_review.txt || echo "diff --git a/test.py b/test.py" > diff_code_to_review.txt
+          git diff HEAD~1 HEAD > diff_code_to_review.txt || echo "diff --git a/simple_test.py b/simple_test.py" > diff_code_to_review.txt
           echo "Created diff file: $(wc -c < diff_code_to_review.txt) bytes"
       
       - run: |
