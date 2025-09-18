@@ -3,11 +3,10 @@ import tiktoken
 from whatthepatch import parse_patch
 import re
 import os,sys
+
 # --- Configuration ---
 # The target context window size for the LLM.
 CONTEXT_WINDOW_TOKENS = 100000 
-# The base branch to compare against for generating the diff.
-#BASE_BRANCH = "origin/main" 
 
 def count_tokens(text: str, tokenizer) -> int:
     """Calculates the number of tokens in a given text."""
@@ -45,9 +44,9 @@ def split_file_diff(patch, tokenizer) -> list[str]:
     current_hunks = []
     current_chunk_tokens = 0
     
-    # Estimate header tokens once; it's part of every chunk from this file.
-    #header_str = f"diff --git a/{patch.header.old_path} b/{patch.header.new_path}\n--- a/{patch.header.old_path}\n+++ b/{patch.header.new_path}\n"
-    header_tokens = count_tokens(code_to_review, tokenizer)
+    # FIXED: Estimate header tokens correctly
+    header_str = f"diff --git a/{patch.header.old_path} b/{patch.header.new_path}\n--- a/{patch.header.old_path}\n+++ b/{patch.header.new_path}\n"
+    header_tokens = count_tokens(header_str, tokenizer)
 
     for hunk in patch.hunks:
         hunk_text = str(hunk)
@@ -91,8 +90,7 @@ def split_file_diff(patch, tokenizer) -> list[str]:
         
     return chunks
 
-
-def create_diff_chunks(code_to_review,OUTPUT_CHUNKS_DIR) -> list[str]:
+def create_diff_chunks(code_to_review, OUTPUT_CHUNKS_DIR) -> list[str]:
     """
     Main function to generate git diff and split it into chunks
     that fit within the LLM's context window.
@@ -101,104 +99,109 @@ def create_diff_chunks(code_to_review,OUTPUT_CHUNKS_DIR) -> list[str]:
     tokenizer = tiktoken.get_encoding("cl100k_base")
     full_diff = code_to_review
 
-    if not full_diff:
+    if not full_diff or not full_diff.strip():
         print("No diff found or git error occurred.")
         return []
+
+    print(f"Diff content preview (first 500 chars):\n{full_diff[:500]}")
+    print("="*50)
 
     # --- Level 1: Try the entire diff first ---
     total_tokens = count_tokens(full_diff, tokenizer)
     print(f"Total diff has {total_tokens} tokens.")
+    
     if total_tokens <= CONTEXT_WINDOW_TOKENS:
         print("Entire diff fits within the context window. Creating one chunk.")
         patches = list(parse_patch(full_diff))
         num_patches = len(patches)
+        print(f"Number of patches detected: {num_patches}")
 
         chunk_filename = "" # Initialize filename
 
         if num_patches == 1:
-            # <<< NEW: Exactly one file changed, use its name >>>
+            # Exactly one file changed, use its name
             patch = patches[0]
             original_file_path = patch.header.new_path
             
             # Get just the filename, e.g., 'my_script.py' from 'src/app/my_script.py'
             base_filename = os.path.basename(original_file_path).strip()
-            print(f" -> base_filename: '{base_filename}'")
-            print(f" -> original_file_path: '{original_file_path}'")
+            print(f"Single file detected: '{base_filename}' from path '{original_file_path}'")
+            
             if not (base_filename.endswith(".py") or base_filename.endswith(".sql")):
-                print(f" -> Skipping non-.py/.sql file: {base_filename}")       
+                print(f"Skipping non-.py/.sql file: {base_filename}")
+                return []
             else:
                 # Create the final output filename, e.g., 'my_script.py.diff'
                 chunk_filename = os.path.join(OUTPUT_CHUNKS_DIR, f"{base_filename}")
-                print(f" -> Single file detected: '{base_filename}'. Saving to specific filename.")
+                print(f"Saving full diff to: {chunk_filename}")
                 with open(chunk_filename, "w") as f:
                     f.write(full_diff)
-                print(f" -> Saved full diff chunk to {chunk_filename}")
-                final_chunks = [full_diff]
-                return final_chunks
+                print(f"Successfully saved full diff chunk to {chunk_filename}")
+                return [full_diff]
 
-        else:
-            # <<< MODIFIED: Fallback for multiple files or no files >>>
-            # If there are 0 or >1 files, a specific name is misleading.
-            print(f" -> {num_patches} files detected. Using generic filename to represent the combined diff.")
+        elif num_patches > 1:
+            # Multiple files - use generic filename
+            print(f"{num_patches} files detected. Using generic filename for combined diff.")
             chunk_filename = os.path.join(OUTPUT_CHUNKS_DIR, "full_diff_chunk.py")
             with open(chunk_filename, "w") as f:
                 f.write(full_diff)
-            print(f" -> Saved full diff chunk to {chunk_filename}")
-            final_chunks = [full_diff]
-            return final_chunks
+            print(f"Saved full diff chunk to {chunk_filename}")
+            return [full_diff]
+        else:
+            print("No valid patches found in diff")
+            return []
 
     # --- Level 2: Diff is too large, split by file ---
     print("Total diff exceeds context window. Splitting by file...")
     patches = list(parse_patch(full_diff))
     final_chunks = []
     chunk_counter = 0
+    
     for patch in patches:
-        # We only care about Python files for this logic
+        # We only care about Python/SQL files for this logic
         original_file_path = patch.header.new_path
-        base_filename = os.path.basename(original_file_path).strip() # Just the file name, e.g., 'my_script.py'
-        print(f" -> base_filename: '{base_filename}'")
-        print(f" -> original_file_path: '{original_file_path}'")
+        base_filename = os.path.basename(original_file_path).strip()
+        print(f"Processing file: '{base_filename}' from path: '{original_file_path}'")
+        
         # Filter for Python or SQL files (or other relevant types)
         if not (base_filename.endswith(".py") or base_filename.endswith(".sql")):
-            print(f" -> Skipping non-.py/.sql file: {base_filename}")
+            print(f"Skipping non-.py/.sql file: {base_filename}")
             continue
 
         file_diff_str = str(patch)
         file_tokens = count_tokens(file_diff_str, tokenizer)
         
-        print(f"\nProcessing file: {patch.header.new_path} ({file_tokens} tokens)")
+        print(f"File diff has {file_tokens} tokens")
         if file_tokens <= CONTEXT_WINDOW_TOKENS:
-            print(" -> Fits in context window. Adding as a single chunk.")
+            print("File fits in context window. Adding as a single chunk.")
             final_chunks.append(file_diff_str)
-            # --- NEW: Save this chunk to a file ---
-            # Use a unique name for each chunk
+            
+            # Save this chunk to a file
             chunk_filename = os.path.join(OUTPUT_CHUNKS_DIR, f"{base_filename}")
             with open(chunk_filename, "w") as f:
                 f.write(file_diff_str)
-            print(f" -> Saved chunk to '{base_filename}' to {chunk_filename}")
+            print(f"Saved chunk '{base_filename}' to {chunk_filename}")
             chunk_counter += 1
         else:
             # --- Level 3: File is too large, split by function/class ---
             print(f"File diff for '{base_filename}' is too large. Splitting by logical blocks/functions...")
             individual_file_sub_chunks = split_file_diff(patch, tokenizer)
-            print(f" -> Split '{base_filename}' into {len(individual_file_sub_chunks)} smaller chunks.")
+            print(f"Split '{base_filename}' into {len(individual_file_sub_chunks)} smaller chunks.")
             
             final_chunks.extend(individual_file_sub_chunks)
     
             for sub_chunk_idx, sub_chunk_content in enumerate(individual_file_sub_chunks):
                 # Create a unique filename for each part of the split file
-                # e.g., 'part_1_my_script.py', 'part_2_my_script.py'
                 output_filename = os.path.join(OUTPUT_CHUNKS_DIR, f"part_{sub_chunk_idx + 1}_{base_filename}")
                 with open(output_filename, "w") as f:
                     f.write(sub_chunk_content)
-                print(f"   -> Saved sub-chunk {sub_chunk_idx + 1} for '{base_filename}' to {output_filename}")
+                print(f"Saved sub-chunk {sub_chunk_idx + 1} for '{base_filename}' to {output_filename}")
                 chunk_counter += 1
     
-    print(f"\nSuccessfully saved {chunk_counter} diff files to '{os.path.abspath(OUTPUT_CHUNKS_DIR)}'.")
+    print(f"Successfully saved {chunk_counter} diff files to '{os.path.abspath(OUTPUT_CHUNKS_DIR)}'.")
     return final_chunks
 
 if __name__ == "__main__":
-    print(f"Reading diff from file diff_code_to_review")
     if len(sys.argv) < 3:
         print("Usage: python split_code_diff.py <input_diff_file_path> <output_directory_path>", file=sys.stderr)
         sys.exit(1)
@@ -206,27 +209,42 @@ if __name__ == "__main__":
     input_diff_file = sys.argv[1]
     output_dir = sys.argv[2]
     OUTPUT_CHUNKS_DIR = output_dir
+    
+    print(f"Reading diff from file: {input_diff_file}")
+    print(f"Output directory: {output_dir}")
+    
+    # Clean up previous directory
     if os.path.exists(OUTPUT_CHUNKS_DIR):
         import shutil
         shutil.rmtree(OUTPUT_CHUNKS_DIR)
         print(f"Cleaned up previous '{OUTPUT_CHUNKS_DIR}' directory.")
     os.makedirs(OUTPUT_CHUNKS_DIR, exist_ok=True)
-    with open(input_diff_file, 'r') as file:
-        code_to_review = file.read()
-    diff_chunks = create_diff_chunks(code_to_review,OUTPUT_CHUNKS_DIR)
-
-    # print("\n" + "="*50)
-    # print(f"Generated {len(diff_chunks)} chunk(s) for the LLM.")
-    # print("="*50 + "\n")
-
-    # for i, chunk in enumerate(diff_chunks):
-    #     print(f"--- Chunk {i+1} ---")
-    #     print(chunk[:500] + "\n..." if len(chunk) > 500 else chunk) # Print a preview
-    #     print("-"*(len(f"--- Chunk {i+1} ---")) + "\n")
-    files_created = len(os.listdir(OUTPUT_CHUNKS_DIR))
-    print(f"Number of chunk files created: {files_created}")
+    
+    # Read the diff file
+    try:
+        with open(input_diff_file, 'r') as file:
+            code_to_review = file.read()
+        
+        print(f"Successfully read {len(code_to_review)} characters from {input_diff_file}")
+        
+        if not code_to_review.strip():
+            print("ERROR: Diff file is empty!")
+            files_created = 0
+        else:
+            # Process the diff
+            diff_chunks = create_diff_chunks(code_to_review, OUTPUT_CHUNKS_DIR)
+            files_created = len(os.listdir(OUTPUT_CHUNKS_DIR))
+            print(f"Number of chunk files created: {files_created}")
+    
+    except FileNotFoundError:
+        print(f"ERROR: Could not find input file: {input_diff_file}")
+        files_created = 0
+    except Exception as e:
+        print(f"ERROR: Failed to process diff file: {e}")
+        files_created = 0
     
     # Use GITHUB_OUTPUT to communicate back to the workflow
     if 'GITHUB_OUTPUT' in os.environ:
         with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
             print(f'files_created={files_created}', file=f)
+        print(f"Set GitHub output: files_created={files_created}")
