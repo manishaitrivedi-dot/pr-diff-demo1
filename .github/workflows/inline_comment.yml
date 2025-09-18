@@ -18,7 +18,7 @@ jobs:
       
       - run: |
           mkdir chunks reviews
-          cp scripts/*.py chunks/
+          cp scripts/simple_test.py chunks/
       
       - run: python scripts/cortex_python_review.py chunks reviews 123 abc123
         env:
