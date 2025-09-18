@@ -43,15 +43,18 @@ jobs:
           name: outputs
           path: reviews/
       
-      - uses: peter-evans/create-or-update-comment@v4
-        if: github.event_name == 'pull_request'
-        with:
-          issue-number: ${{ github.event.pull_request.number }}
-          body-path: reviews/consolidated_executive_summary.md
+      - run: |
+          if [ -f "reviews/consolidated_executive_summary.md" ]; then
+            echo "PR Comment would contain:"
+            cat reviews/consolidated_executive_summary.md
+          else
+            echo "No executive summary found"
+          fi
         continue-on-error: true
       
-      - run: python scripts/inline_comment.py
-        if: github.event_name == 'pull_request'
+      - run: |
+          echo "Running inline comments..."
+          python scripts/inline_comment.py || echo "Inline script completed with errors"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
