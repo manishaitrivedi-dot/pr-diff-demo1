@@ -122,7 +122,7 @@ jobs:
         run: |
           DYNAMIC_OUTPUT_DIR_NAME="${{ steps.generate_dir_name.outputs.DYNAMIC_OUTPUT_DIR_PATH }}"
           echo "Splitting diff into chunks using directory: $DYNAMIC_OUTPUT_DIR_NAME"
-          python split_code_diff.py diff_code_to_review.txt "$DYNAMIC_OUTPUT_DIR_NAME"
+          python scripts/split_code_diff.py diff_code_to_review.txt "$DYNAMIC_OUTPUT_DIR_NAME"
 
       - name: Verify files created by script
         if: steps.token_split.outputs.files_created > 0
@@ -160,7 +160,7 @@ jobs:
           echo "  PR number: ${{ github.event.pull_request.number }}"
           echo "  Commit SHA: ${{ github.sha }}"
           
-          python cortex_python_review.py "$DYNAMIC_OUTPUT_DIR_NAME" "$DYNAMIC_OUTPUT_REVIEW_DIR_NAME" "${{ github.event.pull_request.number }}" "${{ github.sha }}"
+          python scripts/cortex_python_review.py "$DYNAMIC_OUTPUT_DIR_NAME" "$DYNAMIC_OUTPUT_REVIEW_DIR_NAME" "${{ github.event.pull_request.number }}" "${{ github.sha }}"
 
       - name: Upload review outputs as artifact
         if: steps.token_split.outputs.files_created > 0
@@ -191,7 +191,7 @@ jobs:
             echo "Searching for JSON files..."
             find . -name "*.json" -type f
           fi
-          python inline_comment.py
+          python scripts/inline_comment.py
 
       - name: Final Summary
         if: always()
