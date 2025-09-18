@@ -56,6 +56,35 @@ jobs:
           name: outputs
           path: reviews/
       
+      - run: |
+          echo "Fixing review_output.json structure..."
+          if [ -f "review_output.json" ]; then
+            python3 -c "
+import json
+try:
+    with open('review_output.json', 'r') as f:
+        data = json.load(f)
+    
+    # Add missing 'line' field to critical findings
+    if 'criticals' in data and isinstance(data['criticals'], list):
+        for critical in data['criticals']:
+            if isinstance(critical, dict):
+                if 'line' not in critical:
+                    critical['line'] = 1
+                if 'line_number' in critical and 'line' not in critical:
+                    critical['line'] = critical['line_number']
+                    
+    with open('review_output.json', 'w') as f:
+        json.dump(data, f, indent=2)
+    print('Fixed JSON structure')
+except Exception as e:
+    print(f'JSON fix failed: {e}')
+"
+          else
+            echo "review_output.json not found"
+          fi
+        continue-on-error: true
+
       - run: python scripts/inline_comment.py || echo "Inline completed"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
