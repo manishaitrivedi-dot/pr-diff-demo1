@@ -59,6 +59,7 @@ jobs:
           echo "  Reviews: $DYNAMIC_OUTPUT_REVIEW_DIR"
 
       - name: Create Test Diff File
+        id: create_test_files
         run: |
           echo "Creating test diff for processing..."
           mkdir -p test_chunks
@@ -101,7 +102,7 @@ jobs:
           python scripts/cortex_python_review.py "$DYNAMIC_OUTPUT_DIR_NAME" "$DYNAMIC_OUTPUT_REVIEW_DIR_NAME" "${{ github.event.pull_request.number }}" "${{ github.sha }}"
 
       - name: Upload review outputs as artifact
-        if: steps.create_test_files.outputs.files_created > 0
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: executive-review-outputs
