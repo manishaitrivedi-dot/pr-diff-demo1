@@ -29,6 +29,14 @@ cfg = {
 }
 session = Session.builder.configs(cfg).create()
 
+# FIX DATABASE ERROR: Explicitly set database context
+try:
+    session.sql("USE DATABASE MY_DB").collect()
+    session.sql("USE SCHEMA PUBLIC").collect()
+    print("✅ Database context set: MY_DB.PUBLIC")
+except Exception as e:
+    print(f"⚠️ Warning: Could not set database context: {e}")
+
 # ---------------------
 # PROMPT TEMPLATES
 # ---------------------
@@ -281,28 +289,37 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
     
     # BALANCED severity weightings (executive focus)
     severity_weights = {
-        "Critical": 15,    # Each critical issue deducts 15 points (was 25)
-        "High": 6,         # Each high issue deducts 6 points (was 12)
-        "Medium": 3,       # Each medium issue deducts 3 points (was 5)
+        "Critical": 15,    # Each critical issue deducts 15 points
+        "High": 6,         # Each high issue deducts 6 points
+        "Medium": 3,       # Each medium issue deducts 3 points
         "Low": 1           # Each low issue deducts 1 point
     }
     
-    # Count issues by severity
+    # Count issues by severity - STRICT PRECISION (NO CONVERSION)
     severity_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
     total_affected_lines = 0
     
     print(f"  📊 Scoring {len(findings)} findings...")
     
     for finding in findings:
-        severity = str(finding.get("severity", "Low")).strip().title()
+        severity = str(finding.get("severity", "")).strip()  # Keep original case
+        
+        # STRICT MATCHING - NO CONVERSION TO MEDIUM
+        if severity == "Critical":
+            severity_counts["Critical"] += 1
+        elif severity == "High":
+            severity_counts["High"] += 1
+        elif severity == "Medium":
+            severity_counts["Medium"] += 1
+        elif severity == "Low":
+            severity_counts["Low"] += 1
+        else:
+            # LOG UNRECOGNIZED SEVERITY BUT DON'T COUNT IT
+            print(f"    ⚠️ UNRECOGNIZED SEVERITY: '{severity}' in finding: {finding.get('finding', 'Unknown')[:50]}... - SKIPPING")
+            continue  # Skip this finding entirely instead of converting
+            
         print(f"    - {severity}: {finding.get('finding', 'No description')[:50]}...")
         
-        if severity in severity_counts:
-            severity_counts[severity] += 1
-        else:
-            # Handle any non-standard severity as Medium
-            severity_counts["Medium"] += 1
-            
         # Count affected lines (treat N/A as 1 line)
         line_num = finding.get("line_number", "N/A")
         total_affected_lines += 1
@@ -316,7 +333,7 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
             
             # IMPROVED: Much more balanced progressive penalty
             if severity == "Critical":
-                # Critical: 15, 20, 25, 30 for 1,2,3,4 issues (was exponential)
+                # Critical: 15, 20, 25, 30 for 1,2,3,4 issues
                 if count <= 2:
                     deduction = weight * count
                 else:
@@ -346,8 +363,8 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
     # REDUCED line coverage penalty
     if total_lines_of_code > 0:
         affected_ratio = total_affected_lines / total_lines_of_code
-        if affected_ratio > 0.2:  # Only penalize if more than 20% affected (was 10%)
-            coverage_penalty = min(10, int(affected_ratio * 50))  # Max 10 point penalty (was 20)
+        if affected_ratio > 0.2:  # Only penalize if more than 20% affected
+            coverage_penalty = min(10, int(affected_ratio * 50))  # Max 10 point penalty
             total_deductions += coverage_penalty
             print(f"    Coverage penalty: -{coverage_penalty} points ({affected_ratio:.1%} affected)")
     
@@ -367,10 +384,10 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
     
     # ADJUSTED executive score bands for more realistic scoring
     if final_score >= 85:
-        return min(100, final_score)  # Excellent (lowered from 90)
-    elif final_score >= 65:  # Lowered from 75
+        return min(100, final_score)  # Excellent
+    elif final_score >= 65:
         return final_score  # Good
-    elif final_score >= 40:  # Lowered from 50
+    elif final_score >= 40:
         return final_score  # Fair - needs attention
     else:
         return max(0, final_score)  # Poor - immediate action required
@@ -606,7 +623,7 @@ def main():
         if pull_request_number and pull_request_number != 0:
             try:
                 create_table_query = """
-                CREATE TABLE IF NOT EXISTS CODE_REVIEW_LOG (
+                CREATE TABLE IF NOT EXISTS MY_DB.PUBLIC.CODE_REVIEW_LOG (
                     REVIEW_ID INTEGER AUTOINCREMENT START 1 INCREMENT 1,
                     PULL_REQUEST_NUMBER INTEGER,
                     COMMIT_SHA VARCHAR(40),
@@ -616,9 +633,10 @@ def main():
                 );
                 """
                 session.sql(create_table_query).collect()
+                print("✅ CODE_REVIEW_LOG table ready")
                 
                 query = f"""
-                    SELECT REVIEW_SUMMARY, DETAILED_FINDINGS FROM CODE_REVIEW_LOG 
+                    SELECT REVIEW_SUMMARY, DETAILED_FINDINGS FROM MY_DB.PUBLIC.CODE_REVIEW_LOG 
                     WHERE PULL_REQUEST_NUMBER = {pull_request_number}
                     ORDER BY REVIEW_TIMESTAMP DESC 
                     LIMIT 1
@@ -739,7 +757,7 @@ def main():
         if pull_request_number and pull_request_number != 0:
             try:
                 insert_sql = """
-                    INSERT INTO CODE_REVIEW_LOG (PULL_REQUEST_NUMBER, COMMIT_SHA, REVIEW_SUMMARY, DETAILED_FINDINGS)
+                    INSERT INTO MY_DB.PUBLIC.CODE_REVIEW_LOG (PULL_REQUEST_NUMBER, COMMIT_SHA, REVIEW_SUMMARY, DETAILED_FINDINGS)
                     VALUES (?, ?, ?, PARSE_JSON(?))
                 """
                 params = [
