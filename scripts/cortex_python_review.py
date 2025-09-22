@@ -483,7 +483,54 @@ def format_executive_pr_display(json_response: dict, processed_files: list, has_
         
         display_text += "\n*Critical issues are also posted as inline comments on specific lines.*\n\n"
 
-    # Conditional display based on previous context
+    # Add Previous Review Findings Section (Client Requirement)
+    if has_previous_context and previous_issues_resolved:
+        total_resolved = sum(1 for issue in previous_issues_resolved if issue.get("status") == "RESOLVED")
+        total_partial = sum(1 for issue in previous_issues_resolved if issue.get("status") == "PARTIALLY_RESOLVED")
+        total_pending = sum(1 for issue in previous_issues_resolved if issue.get("status") == "NOT_ADDRESSED")
+        total_worsened = sum(1 for issue in previous_issues_resolved if issue.get("status") == "WORSENED")
+        
+        display_text += f"""## 📋 Previous Review Status Summary
+
+**Total Previous Issues:** {len(previous_issues_resolved)} | **Resolved:** {total_resolved} | **Partially Resolved:** {total_partial} | **Pending:** {total_pending} | **Worsened:** {total_worsened}
+
+<details>
+<summary><strong>🔍 Previous Review Findings Status</strong> (Click to expand)</summary>
+
+| Issue Description | Status | Line | Details |
+|-------------------|--------|------|---------|
+"""
+        
+        # Sort previous issues by status priority (Worsened > Pending > Partially Resolved > Resolved)
+        status_priority = {"WORSENED": 1, "NOT_ADDRESSED": 2, "PARTIALLY_RESOLVED": 3, "RESOLVED": 4}
+        sorted_previous = sorted(previous_issues_resolved, 
+                               key=lambda x: status_priority.get(x.get("status", "RESOLVED"), 4))
+        
+        for issue in sorted_previous:
+            original_issue = str(issue.get("original_issue", "Unknown issue"))
+            # Truncate to 12 characters as per client requirement
+            issue_desc = original_issue[:12] + "..." if len(original_issue) > 12 else original_issue
+            
+            status = issue.get("status", "UNKNOWN")
+            details = str(issue.get("details", "No details provided"))
+            
+            # Extract line number if mentioned in details, otherwise use N/A
+            line_match = re.search(r'line\s*(\d+)', details.lower())
+            line_number = line_match.group(1) if line_match else "N/A"
+            
+            # Status formatting with emojis
+            status_display = {
+                "RESOLVED": "✅ Resolved",
+                "PARTIALLY_RESOLVED": "🟡 Partial",
+                "NOT_ADDRESSED": "❌ Pending", 
+                "WORSENED": "🔴 Worsened"
+            }.get(status, f"❓ {status}")
+            
+            display_text += f"| {issue_desc} | {status_display} | {line_number} | {details} |\n"
+        
+        display_text += "\n</details>\n\n"
+
+    # Current Review Findings Section
     if findings:
         display_text += """<details>
 <summary><strong>🔍 Current Review Findings</strong> (Click to expand)</summary>
