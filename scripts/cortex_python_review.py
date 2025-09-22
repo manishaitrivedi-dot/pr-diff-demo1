@@ -50,6 +50,9 @@ except Exception as e:
             session.sql("CREATE SCHEMA IF NOT EXISTS MY_SCHEMA").collect()
             session.sql("USE SCHEMA MY_SCHEMA").collect()
             print("✅ Created and using MY_DB.MY_SCHEMA")
+        except Exception as e3:
+            print(f"⚠️ Warning: Schema creation failed: {e3}")
+            print("⚠️ Continuing without database logging")
 
 # ---------------------
 # PROMPT TEMPLATES
