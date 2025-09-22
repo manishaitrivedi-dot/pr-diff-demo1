@@ -116,6 +116,8 @@ Follow these instructions to populate the JSON fields:
          -   **`effort_estimate`**: Estimate effort as "LOW", "MEDIUM", or "HIGH".
          -   **`priority_ranking`**: Assign priority ranking (1 = highest priority).
          -   **`filename`**: The name of the file where the issue was found.
+         -   **`is_previous_issue`**: "Yes" or "No" - whether this issue existed in previous review.
+         -   **`resolution_status`**: "New", "Not Addressed", "Partially Resolved", "Resolved", or "Worsened" - status compared to previous review.
 8.  **`metrics` (object):** Include technical metrics:
          -   **`lines_of_code`**: Total number of lines analyzed across all files.
          -   **`complexity_score`**: "LOW", "MEDIUM", or "HIGH".
@@ -144,12 +146,35 @@ You are reviewing subsequent commits for Pull Request #{pr_number}.
 PREVIOUS REVIEW SUMMARY AND FINDINGS:
 {previous_context}
 
+PREVIOUS DETAILED FINDINGS FOR INTELLIGENT COMPARISON:
+{previous_findings_json}
+
 CRITICAL INSTRUCTION: You must analyze the new code changes with full awareness of the previous feedback. Specifically:
-1. Check if previous Critical/High severity issues were addressed in the new code
-2. Identify if any previous recommendations were implemented
-3. Note any new issues that may have been introduced
-4. Maintain continuity with previous review comments
-5. In the "previous_issues_resolved" section, provide specific status for each previous issue
+
+1. **INTELLIGENT ISSUE TRACKING:** For each current finding, determine if it relates to a previous issue by analyzing:
+   - Same file and similar line numbers (±10 lines tolerance)
+   - Similar issue descriptions or root causes
+   - Same security/performance/maintainability category
+   - Conceptually related problems (e.g., "hardcoded credentials" vs "credentials in plaintext")
+
+2. **RESOLUTION STATUS LOGIC:**
+   - "New": Issue didn't exist in previous review
+   - "Not Addressed": Identical or very similar issue still exists at same location
+   - "Partially Resolved": Issue improved but not fully fixed (e.g., moved to config but still hardcoded)
+   - "Resolved": Previous issue no longer exists (don't include in current findings)
+   - "Worsened": Similar issue but now more severe or widespread
+
+3. **POPULATE REQUIRED FIELDS:** For each finding in detailed_findings array, you MUST include:
+   - `is_previous_issue`: "Yes" if this relates to any previous finding, "No" if completely new
+   - `resolution_status`: Use the logic above to determine accurate status
+
+4. **EXECUTIVE INTELLIGENCE:** Don't just do text matching. Understand the code context:
+   - If line numbers changed due to refactoring, still track the logical issue
+   - If an issue was moved from one function to another, track the conceptual continuity
+   - If recommendations were implemented but incompletely, mark as "Partially Resolved"
+
+5. **PREVIOUS ISSUES RESOLVED SECTION:** List issues from previous review that are NOT in current findings:
+   - These should be marked as "RESOLVED" with details about what was fixed
 
 {consolidated_template}
 """
@@ -189,13 +214,17 @@ def build_prompt_for_individual_review(code_text: str, filename: str = "code_fil
     prompt = prompt.replace("{filename}", filename)
     return prompt
 
-def build_prompt_for_consolidated_summary(all_reviews_content: str, previous_context: str = None, pr_number: int = None) -> str:
-    if previous_context and pr_number:
+def build_prompt_for_consolidated_summary(all_reviews_content: str, previous_context: str = None, pr_number: int = None, previous_findings: list = None) -> str:
+    if previous_context and pr_number and previous_findings:
+        # LLM-BASED INTELLIGENT TRACKING
+        previous_findings_json = json.dumps(previous_findings, indent=2)
         prompt = PROMPT_TEMPLATE_WITH_CONTEXT.replace("{previous_context}", previous_context)
         prompt = prompt.replace("{pr_number}", str(pr_number))
+        prompt = prompt.replace("{previous_findings_json}", previous_findings_json)
         prompt = prompt.replace("{consolidated_template}", PROMPT_TEMPLATE_CONSOLIDATED)
         prompt = prompt.replace("{ALL_REVIEWS_CONTENT}", all_reviews_content)
     else:
+        # No previous context - standard review
         prompt = PROMPT_TEMPLATE_CONSOLIDATED.replace("{ALL_REVIEWS_CONTENT}", all_reviews_content)
     return prompt
 
@@ -346,45 +375,7 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
     else:
         return max(0, final_score)  # Poor - immediate action required
 
-def compare_with_previous_issues(current_findings: list, previous_issues: list) -> list:
-    """
-    Compare current findings with previous issues to determine status.
-    Returns current findings enhanced with previous issue tracking.
-    """
-    if not previous_issues:
-        # No previous issues - all are new
-        for finding in current_findings:
-            finding["is_previous_issue"] = "No"
-            finding["resolution_status"] = "New"
-        return current_findings
-    
-    print(f"  🔄 Comparing {len(current_findings)} current findings with {len(previous_issues)} previous issues...")
-    
-    # Convert previous issues to searchable format
-    previous_lookup = {}
-    for prev_issue in previous_issues:
-        # Create lookup key from file, line, and issue description
-        file_name = prev_issue.get("filename", "")
-        line_num = str(prev_issue.get("line_number", ""))
-        issue_text = str(prev_issue.get("finding", ""))[:30].lower()  # First 30 chars for matching
-        
-        key = f"{file_name}:{line_num}:{issue_text}"
-        previous_lookup[key] = prev_issue
-    
-    # Check each current finding against previous issues
-    for finding in current_findings:
-        file_name = finding.get("filename", "")
-        line_num = str(finding.get("line_number", ""))
-        issue_text = str(finding.get("finding", ""))[:30].lower()
-        
-        current_key = f"{file_name}:{line_num}:{issue_text}"
-        
-        # Try exact match first
-        if current_key in previous_lookup:
-            finding["is_previous_issue"] = "Yes"
-            finding["resolution_status"] = "Not Addressed"
-            print(f"    ✓ Found exact match: {file_name}:{line_num}")
-        else:
+def format_executive_pr_display(json_response: dict, processed_files: list, previous_issues: list = None) -> str:        else:
             # Try fuzzy matching by file and line
             file_line_key = f"{file_name}:{line_num}:"
             fuzzy_matches = [k for k in previous_lookup.keys() if k.startswith(file_line_key)]
@@ -403,14 +394,8 @@ def format_executive_pr_display(json_response: dict, processed_files: list, prev
     summary = json_response.get("executive_summary", "Technical analysis completed")
     findings = json_response.get("detailed_findings", [])
     
-    # ENHANCEMENT: Compare with previous issues if available
-    if previous_issues:
-        findings = compare_with_previous_issues(findings, previous_issues)
-    else:
-        # No previous issues - mark all as new
-        for finding in findings:
-            finding["is_previous_issue"] = "No"
-            finding["resolution_status"] = "New"
+    # LLM HANDLES TRACKING - No need for manual comparison
+    # The LLM has already populated is_previous_issue and resolution_status fields
     
     quality_score = json_response.get("quality_score", 75)
     business_impact = json_response.get("business_impact", "MEDIUM")
@@ -472,7 +457,7 @@ def format_executive_pr_display(json_response: dict, processed_files: list, prev
         
         display_text += "\n*Critical issues are also posted as inline comments on specific lines.*\n\n"
 
-    # Remove the previous issues section and enhance current findings table
+    # LLM-enhanced findings table with intelligent tracking
     if findings:
         display_text += """<details>
 <summary><strong>🔍 Current Review Findings</strong> (Click to expand)</summary>
@@ -493,9 +478,9 @@ def format_executive_pr_display(json_response: dict, processed_files: list, prev
             issue = str(finding.get("finding", ""))  # Already limited to 12 words in JSON
             business_impact_text = str(finding.get("business_impact", ""))  # Already limited to 12 words
             
-            # Get previous issue tracking data
-            is_previous = finding.get("is_previous_issue", "No")
-            resolution_status = finding.get("resolution_status", "New")
+            # Get LLM-determined previous issue tracking data
+            is_previous = finding.get("is_previous_issue", "No")  # LLM populates this
+            resolution_status = finding.get("resolution_status", "New")  # LLM populates this
             
             priority_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(severity, "🟡")
             
@@ -679,11 +664,24 @@ def main():
         print(f"  Combined reviews: {len(combined_reviews_json)} characters")
 
         # Generate consolidation prompt with or without previous context
-        consolidation_prompt = build_prompt_for_consolidated_summary(
-            combined_reviews_json, 
-            previous_review_context, 
-            pull_request_number
-        )
+        if previous_review_context and previous_detailed_findings:
+            # LLM-BASED TRACKING: Include previous findings for intelligent comparison
+            consolidation_prompt = build_prompt_for_consolidated_summary(
+                combined_reviews_json, 
+                previous_review_context, 
+                pull_request_number,
+                previous_detailed_findings  # Pass previous findings to LLM
+            )
+            print(f"  🧠 Using LLM-based intelligent issue tracking with {len(previous_detailed_findings)} previous findings")
+        else:
+            # No previous context - all issues will be marked as new
+            consolidation_prompt = build_prompt_for_consolidated_summary(
+                combined_reviews_json, 
+                previous_review_context, 
+                pull_request_number
+            )
+            print(f"  🆕 Initial review - no previous findings to compare")
+            
         consolidation_prompt = consolidation_prompt.replace("{MAX_CHARS_FOR_FINAL_SUMMARY_FILE}", str(MAX_CHARS_FOR_FINAL_SUMMARY_FILE))
         consolidated_raw = review_with_cortex(MODEL, consolidation_prompt, session)
         
