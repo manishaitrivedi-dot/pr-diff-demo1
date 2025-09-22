@@ -30,9 +30,11 @@ cfg = {
 session = Session.builder.configs(cfg).create()
 
 # FIX DATABASE PERMISSIONS: Try different approaches
+database_context_set = False
 try:
     session.sql("USE DATABASE MY_DB").collect()
     session.sql("USE SCHEMA PUBLIC").collect()
+    database_context_set = True
     print("✅ Database context set: MY_DB.PUBLIC")
 except Exception as e:
     print(f"⚠️ Warning: Could not set database context: {e}")
@@ -41,6 +43,7 @@ except Exception as e:
         session.sql("USE ROLE SYSADMIN").collect()
         session.sql("USE DATABASE MY_DB").collect()
         session.sql("USE SCHEMA PUBLIC").collect()
+        database_context_set = True
         print("✅ Database context set with SYSADMIN role")
     except Exception as e2:
         print(f"⚠️ Warning: SYSADMIN role failed: {e2}")
@@ -49,9 +52,11 @@ except Exception as e:
             session.sql("USE DATABASE MY_DB").collect()
             session.sql("CREATE SCHEMA IF NOT EXISTS MY_SCHEMA").collect()
             session.sql("USE SCHEMA MY_SCHEMA").collect()
+            database_context_set = True
             print("✅ Created and using MY_DB.MY_SCHEMA")
         except Exception as e3:
             print(f"⚠️ Warning: Schema creation failed: {e3}")
+            database_context_set = False
             print("⚠️ Continuing without database logging")
 
 # ---------------------
@@ -211,6 +216,141 @@ CRITICAL INSTRUCTION: You must analyze the new code changes with full awareness 
 
 {consolidated_template}
 """
+
+def ensure_code_review_table():
+    """
+    Ensures the CODE_REVIEW_LOG table exists, creating it if necessary.
+    Returns True if table is available, False otherwise.
+    """
+    if not database_context_set:
+        print("⚠️ Database context not set, skipping table creation")
+        return False
+        
+    try:
+        # Try to create the table
+        create_table_query = """
+        CREATE TABLE IF NOT EXISTS CODE_REVIEW_LOG (
+            REVIEW_ID INTEGER AUTOINCREMENT START 1 INCREMENT 1,
+            PULL_REQUEST_NUMBER INTEGER,
+            COMMIT_SHA VARCHAR(40),
+            REVIEW_SUMMARY VARCHAR,
+            DETAILED_FINDINGS VARIANT,
+            REVIEW_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+            PRIMARY KEY (REVIEW_ID)
+        );
+        """
+        session.sql(create_table_query).collect()
+        
+        # Test if we can query the table
+        test_query = "SELECT COUNT(*) as count FROM CODE_REVIEW_LOG LIMIT 1"
+        result = session.sql(test_query).collect()
+        
+        print("✅ CODE_REVIEW_LOG table is ready and accessible")
+        return True
+        
+    except Exception as e:
+        print(f"⚠️ Warning: Could not ensure CODE_REVIEW_LOG table: {e}")
+        
+        # Try alternative approaches
+        try:
+            # Try with different role
+            session.sql("USE ROLE ACCOUNTADMIN").collect()
+            session.sql(create_table_query).collect()
+            print("✅ CODE_REVIEW_LOG table created with ACCOUNTADMIN role")
+            return True
+        except Exception as e2:
+            print(f"⚠️ ACCOUNTADMIN approach failed: {e2}")
+            
+            try:
+                # Try creating in a different schema
+                alt_create_query = """
+                CREATE TABLE IF NOT EXISTS MY_SCHEMA.CODE_REVIEW_LOG (
+                    REVIEW_ID INTEGER AUTOINCREMENT START 1 INCREMENT 1,
+                    PULL_REQUEST_NUMBER INTEGER,
+                    COMMIT_SHA VARCHAR(40),
+                    REVIEW_SUMMARY VARCHAR,
+                    DETAILED_FINDINGS VARIANT,
+                    REVIEW_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+                );
+                """
+                session.sql("CREATE SCHEMA IF NOT EXISTS MY_SCHEMA").collect()
+                session.sql(alt_create_query).collect()
+                print("✅ CODE_REVIEW_LOG table created in MY_SCHEMA")
+                return True
+            except Exception as e3:
+                print(f"⚠️ Alternative schema creation failed: {e3}")
+                print("⚠️ Continuing without persistent storage - reviews will be stateless")
+                return False
+
+def get_previous_review_context(pull_request_number):
+    """
+    Retrieve previous review context and detailed findings.
+    Returns (previous_context, previous_findings, has_context)
+    """
+    if not database_context_set or not pull_request_number or pull_request_number == 0:
+        return None, [], False
+        
+    try:
+        # Try to get previous review
+        query = f"""
+            SELECT REVIEW_SUMMARY, DETAILED_FINDINGS FROM CODE_REVIEW_LOG 
+            WHERE PULL_REQUEST_NUMBER = {pull_request_number}
+            ORDER BY REVIEW_TIMESTAMP DESC 
+            LIMIT 1
+        """
+        result = session.sql(query).collect()
+        
+        if result:
+            previous_context = result[0]["REVIEW_SUMMARY"][:3000] if result[0]["REVIEW_SUMMARY"] else None
+            previous_findings = []
+            
+            # Parse previous detailed findings
+            try:
+                prev_findings_json = result[0]["DETAILED_FINDINGS"]
+                if prev_findings_json:
+                    if isinstance(prev_findings_json, str):
+                        previous_findings = json.loads(prev_findings_json)
+                    else:
+                        previous_findings = prev_findings_json
+                    print(f"  📋 Retrieved {len(previous_findings)} previous findings for comparison")
+            except Exception as e:
+                print(f"  Warning: Could not parse previous findings: {e}")
+                previous_findings = []
+            
+            print("  📋 Retrieved previous review context - this is a subsequent commit review")
+            return previous_context, previous_findings, True
+        else:
+            print("  📋 No previous review found - this is the initial commit review")
+            return None, [], False
+            
+    except Exception as e:
+        print(f"  Warning: Could not retrieve previous review: {e}")
+        return None, [], False
+
+def store_current_review(pull_request_number, commit_sha, review_summary, detailed_findings):
+    """
+    Store the current review for future comparisons.
+    """
+    if not database_context_set or not pull_request_number or pull_request_number == 0:
+        return False
+        
+    try:
+        insert_sql = """
+            INSERT INTO CODE_REVIEW_LOG (PULL_REQUEST_NUMBER, COMMIT_SHA, REVIEW_SUMMARY, DETAILED_FINDINGS)
+            VALUES (?, ?, ?, PARSE_JSON(?))
+        """
+        params = [
+            pull_request_number, 
+            commit_sha, 
+            review_summary[:8000],  # Truncate for storage
+            json.dumps(detailed_findings)
+        ]
+        session.sql(insert_sql, params=params).collect()
+        print(f"  ✅ Current review stored for future comparisons")
+        return True
+    except Exception as e:
+        print(f"  Warning: Could not store review: {e}")
+        return False
 
 def get_changed_python_files(folder_path=None):
     """
@@ -417,7 +557,7 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
     else:
         return max(25, final_score)  # Poor - but never below 25 for functional code
 
-def format_executive_pr_display(json_response: dict, processed_files: list, has_previous_context: bool = False) -> str:
+def format_executive_pr_display(json_response: dict, processed_files: list, has_previous_context: bool = False, previous_findings_data: list = None) -> str:
     summary = json_response.get("executive_summary", "Technical analysis completed")
     findings = json_response.get("detailed_findings", [])
     
@@ -483,19 +623,71 @@ def format_executive_pr_display(json_response: dict, processed_files: list, has_
         
         display_text += "\n*Critical issues are also posted as inline comments on specific lines.*\n\n"
 
-    # Conditional display based on previous context
+    # NEW: Add Previous Review Findings Section
+    if has_previous_context and previous_findings_data:
+        prev_critical = sum(1 for f in previous_findings_data if str(f.get("severity", "")).upper() == "CRITICAL")
+        prev_high = sum(1 for f in previous_findings_data if str(f.get("severity", "")).upper() == "HIGH") 
+        prev_medium = sum(1 for f in previous_findings_data if str(f.get("severity", "")).upper() == "MEDIUM")
+        prev_low = sum(1 for f in previous_findings_data if str(f.get("severity", "")).upper() == "LOW")
+        
+        display_text += f"""## 📋 Previous Review Findings (Commit Comparison)
+
+**Previous Commit Issues Found:** {len(previous_findings_data)} findings | **Critical:** {prev_critical} | **High:** {prev_high} | **Medium:** {prev_medium} | **Low:** {prev_low}
+
+<details>
+<summary><strong>📝 Previous Commit Review Details</strong> (Click to expand)</summary>
+
+| Priority | File | Line | Issue (Previous Commit) | Business Impact |
+|----------|------|------|-------------------------|-----------------|
+"""
+        
+        # Display previous findings
+        severity_order = {"Critical": 1, "High": 2, "Medium": 3, "Low": 4}
+        sorted_prev_findings = sorted(previous_findings_data, key=lambda x: severity_order.get(str(x.get("severity", "Low")), 4))
+        
+        for finding in sorted_prev_findings[:20]:  # Show top 20 previous findings
+            severity = str(finding.get("severity", "Medium"))
+            filename = finding.get("filename", "N/A")
+            line = finding.get("line_number", "N/A")
+            issue = str(finding.get("finding", ""))[:60] + "..." if len(str(finding.get("finding", ""))) > 60 else str(finding.get("finding", ""))
+            business_impact_text = str(finding.get("business_impact", ""))[:40] + "..." if len(str(finding.get("business_impact", ""))) > 40 else str(finding.get("business_impact", ""))
+            
+            priority_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(severity, "🟡")
+            
+            display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue} | {business_impact_text} |\n"
+        
+        display_text += "\n</details>\n\n"
+        
+        # Add resolution summary if available
+        if previous_issues_resolved:
+            display_text += """<details>
+<summary><strong>✅ Issues Resolved Since Previous Review</strong> (Click to expand)</summary>
+
+"""
+            for resolved in previous_issues_resolved:
+                status = resolved.get("status", "UNKNOWN")
+                original = resolved.get("original_issue", "Unknown issue")
+                details = resolved.get("details", "No details provided")
+                status_emoji = {"RESOLVED": "✅", "PARTIALLY_RESOLVED": "🟡", "NOT_ADDRESSED": "❌", "WORSENED": "🔴"}.get(status, "❓")
+                
+                display_text += f"**{status_emoji} {status}:** {original}\n*Details:* {details}\n\n"
+            
+            display_text += "</details>\n\n"
+
+    # Conditional display based on previous context - FIXED LOGIC  
     if findings:
         display_text += """<details>
 <summary><strong>🔍 Current Review Findings</strong> (Click to expand)</summary>
 
 """
         
-        # Show different table headers based on whether we have previous context
+        # Show different table headers ONLY if we actually have previous context
         if has_previous_context:
             display_text += """| Priority | File | Line | Issue (12 words) | Business Impact (12 words) | Previous Issue | Status |
 |----------|------|------|------------------|----------------------------|----------------|--------|
 """
         else:
+            # NO previous context - don't show Previous Issue and Status columns
             display_text += """| Priority | File | Line | Issue (12 words) | Business Impact (12 words) |
 |----------|------|------|------------------|----------------------------|
 """
@@ -521,6 +713,141 @@ def format_executive_pr_display(json_response: dict, processed_files: list, has_
                 resolution_status = finding.get("resolution_status", "New")  # LLM populates this
                 display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue} | {business_impact_text} | {is_previous} | {resolution_status} |\n"
             else:
+                # NO previous context - only show basic columns
+                display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue} | {business_impact_text} |\n"
+        
+        display_text += "\n</details>\n\n"
+
+    if strategic_recs:
+        display_text += """<details>
+<summary><strong>🎯 Strategic Recommendations</strong> (Click to expand)</summary>
+
+"""
+        for i, rec in enumerate(strategic_recs, 1):
+            display_text += f"{i}. {rec}\n"
+        display_text += "\n</details>\n\n"
+
+    if immediate_actions:
+        display_text += """<details>
+<summary><strong>⚡ Immediate Actions Required</strong> (Click to expand)</summary>
+
+"""
+        for i, action in enumerate(immediate_actions, 1):
+            display_text += f"{i}. {action}\n"
+        display_text += "\n</details>\n\n"
+
+    display_text += f"""---
+
+**📋 Review Summary:** {len(findings)} findings identified | **🎯 Quality Score:** {quality_score}/100 | **⚡ Critical Issues:** {critical_count}
+
+*🔬 Powered by Snowflake Cortex AI • Two-Stage Executive Analysis*"""
+
+    return display_text
+    summary = json_response.get("executive_summary", "Technical analysis completed")
+    findings = json_response.get("detailed_findings", [])
+    
+    quality_score = json_response.get("quality_score", 75)
+    business_impact = json_response.get("business_impact", "MEDIUM")
+    security_risk = json_response.get("security_risk_level", "MEDIUM")
+    tech_debt = json_response.get("technical_debt_score", "MEDIUM")
+    maintainability = json_response.get("maintainability_rating", "FAIR")
+    metrics = json_response.get("metrics", {})
+    strategic_recs = json_response.get("strategic_recommendations", [])
+    immediate_actions = json_response.get("immediate_actions", [])
+    previous_issues_resolved = json_response.get("previous_issues_resolved", [])
+    
+    critical_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "CRITICAL")
+    high_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "HIGH")
+    medium_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "MEDIUM")
+    low_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "LOW")
+    
+    risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}
+    quality_emoji = "🟢" if quality_score >= 80 else ("🟡" if quality_score >= 60 else "🔴")
+    
+    display_text = f"""# 📊 Executive Code Review Report
+
+**Files Analyzed:** {len(processed_files)} files | **Analysis Date:** {datetime.now().strftime('%Y-%m-%d')}
+
+## 🎯 Executive Summary
+{summary}
+
+## 📈 Quality Dashboard
+
+| Metric | Score | Status | Business Impact |
+|--------|-------|--------|-----------------|
+| **Overall Quality** | {quality_score}/100 | {quality_emoji} | {business_impact} Risk |
+| **Security Risk** | {security_risk} | {risk_emoji.get(security_risk, "🟡")} | Critical security concerns |
+| **Technical Debt** | {tech_debt} | {risk_emoji.get(tech_debt, "🟡")} | {len(findings)} items |
+| **Maintainability** | {maintainability} | {risk_emoji.get(maintainability, "🟡")} | Long-term sustainability |
+
+## 🔍 Issue Distribution
+
+| Severity | Count | Priority Actions |
+|----------|-------|------------------|
+| 🔴 Critical | {critical_count} | Immediate fix required |
+| 🟠 High | {high_count} | Fix within sprint |
+| 🟡 Medium | {medium_count} | Plan for next release |
+| 🟢 Low | {low_count} | Optional improvements |
+
+"""
+
+    # Add Critical Issues Summary Section
+    if critical_count > 0:
+        display_text += """## 🚨 Critical Issues Summary
+"""
+        critical_findings = [f for f in findings if str(f.get("severity", "")).upper() == "CRITICAL"]
+        for finding in critical_findings:
+            line = finding.get("line_number", "N/A")
+            issue = str(finding.get("finding", "No description available"))
+            recommendation = str(finding.get("recommendation", finding.get("finding", "")))
+            filename = finding.get("filename", "Unknown")
+            
+            display_text += f"""   * **File {filename}, Line {line}:** {issue}
+     *Recommendation:* {recommendation}
+"""
+        
+        display_text += "\n*Critical issues are also posted as inline comments on specific lines.*\n\n"
+
+    # Conditional display based on previous context - FIXED LOGIC
+    if findings:
+        display_text += """<details>
+<summary><strong>🔍 Current Review Findings</strong> (Click to expand)</summary>
+
+"""
+        
+        # Show different table headers ONLY if we actually have previous context
+        if has_previous_context:
+            display_text += """| Priority | File | Line | Issue (12 words) | Business Impact (12 words) | Previous Issue | Status |
+|----------|------|------|------------------|----------------------------|----------------|--------|
+"""
+        else:
+            # NO previous context - don't show Previous Issue and Status columns
+            display_text += """| Priority | File | Line | Issue (12 words) | Business Impact (12 words) |
+|----------|------|------|------------------|----------------------------|
+"""
+        
+        severity_order = {"Critical": 1, "High": 2, "Medium": 3, "Low": 4}
+        sorted_findings = sorted(findings, key=lambda x: severity_order.get(str(x.get("severity", "Low")), 4))
+        
+        for finding in sorted_findings[:25]:  # Show more findings since they're shorter now
+            severity = str(finding.get("severity", "Medium"))
+            filename = finding.get("filename", "N/A")
+            line = finding.get("line_number", "N/A")
+            
+            # Use the 12-word limited fields from JSON
+            issue = str(finding.get("finding", ""))  # Already limited to 12 words in JSON
+            business_impact_text = str(finding.get("business_impact", ""))  # Already limited to 12 words
+            
+            priority_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(severity, "🟡")
+            
+            # Build row based on whether we have previous context
+            if has_previous_context:
+                # Get LLM-determined previous issue tracking data
+                is_previous = finding.get("is_previous_issue", "No")  # LLM populates this
+                resolution_status = finding.get("resolution_status", "New")  # LLM populates this
+                display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue} | {business_impact_text} | {is_previous} | {resolution_status} |\n"
+            else:
+                # NO previous context - only show basic columns
                 display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue} | {business_impact_text} |\n"
         
         display_text += "\n</details>\n\n"
@@ -590,6 +917,9 @@ def main():
         shutil.rmtree(output_folder_path)
     os.makedirs(output_folder_path, exist_ok=True)
 
+    # CRITICAL: Ensure table exists before proceeding
+    table_available = ensure_code_review_table()
+    
     all_individual_reviews = []
     processed_files = []
 
@@ -652,61 +982,20 @@ def main():
         return
 
     try:
-        # CRITICAL: Retrieve previous review context AND detailed findings
-        previous_review_context = None
-        previous_detailed_findings = []
-        has_previous_context = False
+        # CRITICAL: Retrieve previous review context AND detailed findings using new functions
+        previous_review_context, previous_detailed_findings, has_previous_context = get_previous_review_context(pull_request_number)
         
-        if pull_request_number and pull_request_number != 0:
-            try:
-                create_table_query = """
-                CREATE TABLE IF NOT EXISTS CODE_REVIEW_LOG (
-                    REVIEW_ID INTEGER AUTOINCREMENT START 1 INCREMENT 1,
-                    PULL_REQUEST_NUMBER INTEGER,
-                    COMMIT_SHA VARCHAR(40),
-                    REVIEW_SUMMARY VARCHAR,
-                    DETAILED_FINDINGS VARIANT,
-                    REVIEW_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-                );
-                """
-                session.sql(create_table_query).collect()
-                print("✅ CODE_REVIEW_LOG table ready")
-                
-                query = f"""
-                    SELECT REVIEW_SUMMARY, DETAILED_FINDINGS FROM CODE_REVIEW_LOG 
-                    WHERE PULL_REQUEST_NUMBER = {pull_request_number}
-                    ORDER BY REVIEW_TIMESTAMP DESC 
-                    LIMIT 1
-                """
-                result = session.sql(query).collect()
-                
-                if result:
-                    previous_review_context = result[0]["REVIEW_SUMMARY"][:3000]  # Truncate for prompt
-                    has_previous_context = True
-                    
-                    # Parse previous detailed findings for comparison
-                    try:
-                        prev_findings_json = result[0]["DETAILED_FINDINGS"]
-                        if prev_findings_json:
-                            previous_detailed_findings = json.loads(prev_findings_json) if isinstance(prev_findings_json, str) else prev_findings_json
-                            print(f"  📋 Retrieved {len(previous_detailed_findings)} previous findings for comparison")
-                    except Exception as e:
-                        print(f"  Warning: Could not parse previous findings: {e}")
-                        previous_detailed_findings = []
-                    
-                    print("  📋 Retrieved previous review context - this is a subsequent commit review")
-                else:
-                    print("  📋 No previous review found - this is the initial commit review")
-                    has_previous_context = False
-                    
-            except Exception as e:
-                print(f"  Warning: Could not retrieve previous review: {e}")
+        # Print the correct status message
+        if has_previous_context:
+            print("  🔄 Previous context: ✅ Subsequent commit review")
+        else:
+            print("  🔄 Previous context: ❌ Initial commit review")
 
         combined_reviews_json = json.dumps(all_individual_reviews, indent=2)
         print(f"  Combined reviews: {len(combined_reviews_json)} characters")
 
         # Generate consolidation prompt with or without previous context
-        if previous_review_context and previous_detailed_findings:
+        if has_previous_context and previous_detailed_findings:
             # LLM-BASED TRACKING: Include previous findings for intelligent comparison
             consolidation_prompt = build_prompt_for_consolidated_summary(
                 combined_reviews_json, 
@@ -718,9 +1007,7 @@ def main():
         else:
             # No previous context - all issues will be marked as new
             consolidation_prompt = build_prompt_for_consolidated_summary(
-                combined_reviews_json, 
-                previous_review_context, 
-                pull_request_number
+                combined_reviews_json
             )
             print(f"  🆕 Initial review - no previous findings to compare")
             
@@ -756,8 +1043,13 @@ def main():
                     "previous_issues_resolved": []
                 }
 
-        # Pass has_previous_context to format function
-        executive_summary = format_executive_pr_display(consolidated_json, processed_files, has_previous_context)
+        # CRITICAL: Pass has_previous_context AND previous findings data to format function
+        executive_summary = format_executive_pr_display(
+            consolidated_json, 
+            processed_files, 
+            has_previous_context, 
+            previous_detailed_findings  # Pass the actual previous findings data
+        )
         
         consolidated_path = os.path.join(output_folder_path, "consolidated_executive_summary.md")
         with open(consolidated_path, 'w', encoding='utf-8') as f:
@@ -793,23 +1085,14 @@ def main():
             json.dump(review_output_data, f, indent=2, ensure_ascii=False)
         print("  ✅ review_output.json saved for inline_comment.py compatibility")
 
-        # Store current review for future comparisons
-        if pull_request_number and pull_request_number != 0:
-            try:
-                insert_sql = """
-                    INSERT INTO CODE_REVIEW_LOG (PULL_REQUEST_NUMBER, COMMIT_SHA, REVIEW_SUMMARY, DETAILED_FINDINGS)
-                    VALUES (?, ?, ?, PARSE_JSON(?))
-                """
-                params = [
-                    pull_request_number, 
-                    commit_sha, 
-                    executive_summary[:8000],  # Truncate for storage
-                    json.dumps(consolidated_json.get("detailed_findings", []))
-                ]
-                session.sql(insert_sql, params=params).collect()
-                print(f"  ✅ Current review stored for future comparisons")
-            except Exception as e:
-                print(f"  Warning: Could not store review: {e}")
+        # Store current review for future comparisons using new function
+        if table_available:
+            store_current_review(
+                pull_request_number, 
+                commit_sha, 
+                executive_summary, 
+                consolidated_json.get("detailed_findings", [])
+            )
 
         if 'GITHUB_OUTPUT' in os.environ:
             delimiter = str(uuid.uuid4())
@@ -827,7 +1110,7 @@ def main():
         print(f"🎯 Quality Score: {consolidated_json.get('quality_score', 'N/A')}/100")
         print(f"📈 Findings: {len(consolidated_json.get('detailed_findings', []))}")
         if has_previous_context:
-            print(f"🔄 Previous context included: ✅ Subsequent commit review")
+            print(f"🔄 Previous context: ✅ Subsequent commit review")
         else:
             print(f"🔄 Previous context: ❌ Initial commit review")
         
