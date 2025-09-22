@@ -440,6 +440,32 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 
 """
 
+    # Add Critical Issues Summary section if there are critical issues
+    critical_findings = [f for f in findings if str(f.get("severity", "")).upper() == "CRITICAL"]
+    if critical_findings:
+        display_text += """## 🚨 Critical Issues Summary
+
+**⚠️ IMMEDIATE ACTION REQUIRED** - The following critical issues must be addressed before deployment:
+
+"""
+        for i, finding in enumerate(critical_findings, 1):
+            line_num = finding.get("line_number", "N/A")
+            filename = finding.get("filename", "N/A")
+            issue_desc = finding.get("finding", "No description available")
+            business_impact = finding.get("business_impact", "No business impact specified")
+            recommendation = finding.get("recommendation", finding.get("finding", "No recommendation available"))
+            
+            display_text += f"""**{i}. Critical Issue - Line {line_num}**
+- **File:** {filename}
+- **Issue:** {issue_desc}
+- **Business Impact:** {business_impact}
+- **Required Action:** {recommendation}
+
+"""
+        display_text += """---
+
+"""
+
     # NO TRUNCATION - show full text for previous issues
     if previous_issues:
         display_text += """<details>
