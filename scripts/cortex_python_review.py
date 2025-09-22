@@ -239,12 +239,12 @@ def chunk_large_file(code_text: str, max_chunk_size: int = 50000) -> list:
 def calculate_executive_quality_score(findings: list, total_lines_of_code: int) -> int:
     """
     Executive-level rule-based quality scoring (0-100).
-    Does not rely on LLM - uses deterministic business logic.
+    Does not rely on LLM - uses balanced business logic.
     
-    Scoring Logic:
+    Scoring Logic (BALANCED):
     - Start with base score of 100
-    - Deduct points based on severity and affected lines
-    - Critical issues have exponential impact on score
+    - Deduct points based on severity with reasonable limits
+    - Focus on actionable scoring for executives
     """
     if not findings or len(findings) == 0:
         return 100
@@ -252,11 +252,11 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
     base_score = 100
     total_deductions = 0
     
-    # Severity weightings (executive impact focus)
+    # BALANCED severity weightings (executive focus)
     severity_weights = {
-        "Critical": 25,    # Each critical issue deducts 25 points
-        "High": 12,        # Each high issue deducts 12 points  
-        "Medium": 5,       # Each medium issue deducts 5 points
+        "Critical": 15,    # Each critical issue deducts 15 points (was 25)
+        "High": 6,         # Each high issue deducts 6 points (was 12)
+        "Medium": 3,       # Each medium issue deducts 3 points (was 5)
         "Low": 1           # Each low issue deducts 1 point
     }
     
@@ -282,60 +282,136 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
     
     print(f"  📈 Severity breakdown: Critical={severity_counts['Critical']}, High={severity_counts['High']}, Medium={severity_counts['Medium']}, Low={severity_counts['Low']}")
     
-    # Calculate base deductions from severity
+    # Calculate BALANCED deductions from severity
     for severity, count in severity_counts.items():
         if count > 0:
             weight = severity_weights[severity]
             
-            # Progressive penalty: more issues of same severity = exponential impact
+            # IMPROVED: Much more balanced progressive penalty
             if severity == "Critical":
-                # Critical issues have compound effect: 25, 35, 50, 70 for 1,2,3,4 issues
-                deduction = sum(weight + (i * 10) for i in range(count))
+                # Critical: 15, 20, 25, 30 for 1,2,3,4 issues (was exponential)
+                if count <= 2:
+                    deduction = weight * count
+                else:
+                    deduction = weight * 2 + (count - 2) * (weight + 5)
+                # Cap critical deductions at 50 points max
+                deduction = min(50, deduction)
             elif severity == "High":
-                # High issues: 12, 18, 26, 36 for 1,2,3,4 issues
-                deduction = sum(weight + (i * 6) for i in range(count))
+                # High: Linear scaling with small bonus after 5 issues
+                if count <= 5:
+                    deduction = weight * count
+                else:
+                    deduction = weight * 5 + (count - 5) * (weight + 2)
+                # Cap high severity deductions at 40 points max
+                deduction = min(40, deduction)
             else:
-                # Medium/Low: linear scaling
+                # Medium/Low: Pure linear scaling
                 deduction = weight * count
+                # Cap medium at 20, low at 10
+                if severity == "Medium":
+                    deduction = min(20, deduction)
+                else:
+                    deduction = min(10, deduction)
                 
             total_deductions += deduction
-            print(f"    {severity}: {count} issues = -{deduction} points")
+            print(f"    {severity}: {count} issues = -{deduction} points (capped)")
     
-    # Line coverage penalty (if affecting significant portion of codebase)
+    # REDUCED line coverage penalty
     if total_lines_of_code > 0:
         affected_ratio = total_affected_lines / total_lines_of_code
-        if affected_ratio > 0.1:  # More than 10% of code has issues
-            coverage_penalty = min(20, int(affected_ratio * 100))  # Max 20 point penalty
+        if affected_ratio > 0.2:  # Only penalize if more than 20% affected (was 10%)
+            coverage_penalty = min(10, int(affected_ratio * 50))  # Max 10 point penalty (was 20)
             total_deductions += coverage_penalty
             print(f"    Coverage penalty: -{coverage_penalty} points ({affected_ratio:.1%} affected)")
     
-    # Critical threshold penalties (executive concerns)
-    if severity_counts["Critical"] >= 3:
-        total_deductions += 30  # Executive escalation threshold
-        print(f"    Executive threshold penalty: -30 points (3+ critical issues)")
+    # REDUCED critical threshold penalties
+    if severity_counts["Critical"] >= 5:  # Raised threshold from 3 to 5
+        total_deductions += 15  # Reduced from 30 to 15
+        print(f"    Executive threshold penalty: -15 points (5+ critical issues)")
     
-    if severity_counts["Critical"] + severity_counts["High"] >= 10:
-        total_deductions += 20  # Production readiness concern
-        print(f"    Production readiness penalty: -20 points (10+ critical/high issues)")
+    if severity_counts["Critical"] + severity_counts["High"] >= 15:  # Raised from 10 to 15
+        total_deductions += 10  # Reduced from 20 to 10
+        print(f"    Production readiness penalty: -10 points (15+ critical/high issues)")
     
     # Calculate final score
     final_score = max(0, base_score - total_deductions)
     
     print(f"  🎯 Final calculation: {base_score} - {total_deductions} = {final_score}")
     
-    # Executive score bands
-    if final_score >= 90:
-        return min(100, final_score)  # Excellent
-    elif final_score >= 75:
+    # ADJUSTED executive score bands for more realistic scoring
+    if final_score >= 85:
+        return min(100, final_score)  # Excellent (lowered from 90)
+    elif final_score >= 65:  # Lowered from 75
         return final_score  # Good
-    elif final_score >= 50:
+    elif final_score >= 40:  # Lowered from 50
         return final_score  # Fair - needs attention
     else:
         return max(0, final_score)  # Poor - immediate action required
     
-def format_executive_pr_display(json_response: dict, processed_files: list) -> str:
+def compare_with_previous_issues(current_findings: list, previous_issues: list) -> list:
+    """
+    Compare current findings with previous issues to determine status.
+    Returns current findings enhanced with previous issue tracking.
+    """
+    if not previous_issues:
+        # No previous issues - all are new
+        for finding in current_findings:
+            finding["is_previous_issue"] = "No"
+            finding["resolution_status"] = "New"
+        return current_findings
+    
+    print(f"  🔄 Comparing {len(current_findings)} current findings with {len(previous_issues)} previous issues...")
+    
+    # Convert previous issues to searchable format
+    previous_lookup = {}
+    for prev_issue in previous_issues:
+        # Create lookup key from file, line, and issue description
+        file_name = prev_issue.get("filename", "")
+        line_num = str(prev_issue.get("line_number", ""))
+        issue_text = str(prev_issue.get("finding", ""))[:30].lower()  # First 30 chars for matching
+        
+        key = f"{file_name}:{line_num}:{issue_text}"
+        previous_lookup[key] = prev_issue
+    
+    # Check each current finding against previous issues
+    for finding in current_findings:
+        file_name = finding.get("filename", "")
+        line_num = str(finding.get("line_number", ""))
+        issue_text = str(finding.get("finding", ""))[:30].lower()
+        
+        current_key = f"{file_name}:{line_num}:{issue_text}"
+        
+        # Try exact match first
+        if current_key in previous_lookup:
+            finding["is_previous_issue"] = "Yes"
+            finding["resolution_status"] = "Not Addressed"
+            print(f"    ✓ Found exact match: {file_name}:{line_num}")
+        else:
+            # Try fuzzy matching by file and line
+            file_line_key = f"{file_name}:{line_num}:"
+            fuzzy_matches = [k for k in previous_lookup.keys() if k.startswith(file_line_key)]
+            
+            if fuzzy_matches:
+                finding["is_previous_issue"] = "Yes"
+                finding["resolution_status"] = "Partially Resolved"
+                print(f"    ≈ Found fuzzy match: {file_name}:{line_num}")
+            else:
+                finding["is_previous_issue"] = "No" 
+                finding["resolution_status"] = "New"
+    
+    return current_findings
     summary = json_response.get("executive_summary", "Technical analysis completed")
     findings = json_response.get("detailed_findings", [])
+    
+    # ENHANCEMENT: Compare with previous issues if available
+    if previous_issues:
+        findings = compare_with_previous_issues(findings, previous_issues)
+    else:
+        # No previous issues - mark all as new
+        for finding in findings:
+            finding["is_previous_issue"] = "No"
+            finding["resolution_status"] = "New"
+    
     quality_score = json_response.get("quality_score", 75)
     business_impact = json_response.get("business_impact", "MEDIUM")
     security_risk = json_response.get("security_risk_level", "MEDIUM")
@@ -417,9 +493,9 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
             issue = str(finding.get("finding", ""))  # Already limited to 12 words in JSON
             business_impact_text = str(finding.get("business_impact", ""))  # Already limited to 12 words
             
-            # Check if this is a previous issue (simplified logic)
-            is_previous = "No"  # Default - can be enhanced with actual previous issue tracking
-            resolution_status = "New"  # Default - can be enhanced with actual status tracking
+            # Get previous issue tracking data
+            is_previous = finding.get("is_previous_issue", "No")
+            resolution_status = finding.get("resolution_status", "New")
             
             priority_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(severity, "🟡")
             
@@ -554,8 +630,9 @@ def main():
         return
 
     try:
-        # CRITICAL: Retrieve previous review context BEFORE generating new review
+        # CRITICAL: Retrieve previous review context AND detailed findings
         previous_review_context = None
+        previous_detailed_findings = []
         if pull_request_number and pull_request_number != 0:
             try:
                 create_table_query = """
@@ -580,6 +657,17 @@ def main():
                 
                 if result:
                     previous_review_context = result[0]["REVIEW_SUMMARY"][:3000]  # Truncate for prompt
+                    
+                    # Parse previous detailed findings for comparison
+                    try:
+                        prev_findings_json = result[0]["DETAILED_FINDINGS"]
+                        if prev_findings_json:
+                            previous_detailed_findings = json.loads(prev_findings_json) if isinstance(prev_findings_json, str) else prev_findings_json
+                            print(f"  📋 Retrieved {len(previous_detailed_findings)} previous findings for comparison")
+                    except Exception as e:
+                        print(f"  Warning: Could not parse previous findings: {e}")
+                        previous_detailed_findings = []
+                    
                     print("  📋 Retrieved previous review context - this is a subsequent commit review")
                 else:
                     print("  📋 No previous review found - this is the initial commit review")
@@ -628,7 +716,7 @@ def main():
                     "previous_issues_resolved": []
                 }
 
-        executive_summary = format_executive_pr_display(consolidated_json, processed_files)
+        executive_summary = format_executive_pr_display(consolidated_json, processed_files, previous_detailed_findings)
         
         consolidated_path = os.path.join(output_folder_path, "consolidated_executive_summary.md")
         with open(consolidated_path, 'w', encoding='utf-8') as f:
