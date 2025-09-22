@@ -237,6 +237,7 @@ def chunk_large_file(code_text: str, max_chunk_size: int = 50000) -> list:
     return chunks
 
 def calculate_executive_quality_score(findings: list, total_lines_of_code: int) -> int:
+def calculate_executive_quality_score(findings: list, total_lines_of_code: int) -> int:
     """
     Executive-level rule-based quality scoring (0-100).
     Does not rely on LLM - uses deterministic business logic.
@@ -246,7 +247,7 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
     - Deduct points based on severity and affected lines
     - Critical issues have exponential impact on score
     """
-    if not findings:
+    if not findings or len(findings) == 0:
         return 100
     
     base_score = 100
@@ -264,20 +265,23 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
     severity_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
     total_affected_lines = 0
     
+    print(f"  📊 Scoring {len(findings)} findings...")
+    
     for finding in findings:
-        severity = str(finding.get("severity", "Low")).title()
+        severity = str(finding.get("severity", "Low")).strip().title()
+        print(f"    - {severity}: {finding.get('finding', 'No description')[:50]}...")
+        
         if severity in severity_counts:
             severity_counts[severity] += 1
+        else:
+            # Handle any non-standard severity as Medium
+            severity_counts["Medium"] += 1
             
         # Count affected lines (treat N/A as 1 line)
         line_num = finding.get("line_number", "N/A")
-        if line_num != "N/A":
-            try:
-                total_affected_lines += 1  # Each finding affects at least 1 line
-            except:
-                total_affected_lines += 1
-        else:
-            total_affected_lines += 1
+        total_affected_lines += 1
+    
+    print(f"  📈 Severity breakdown: Critical={severity_counts['Critical']}, High={severity_counts['High']}, Medium={severity_counts['Medium']}, Low={severity_counts['Low']}")
     
     # Calculate base deductions from severity
     for severity, count in severity_counts.items():
@@ -296,6 +300,7 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
                 deduction = weight * count
                 
             total_deductions += deduction
+            print(f"    {severity}: {count} issues = -{deduction} points")
     
     # Line coverage penalty (if affecting significant portion of codebase)
     if total_lines_of_code > 0:
@@ -303,16 +308,21 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
         if affected_ratio > 0.1:  # More than 10% of code has issues
             coverage_penalty = min(20, int(affected_ratio * 100))  # Max 20 point penalty
             total_deductions += coverage_penalty
+            print(f"    Coverage penalty: -{coverage_penalty} points ({affected_ratio:.1%} affected)")
     
     # Critical threshold penalties (executive concerns)
     if severity_counts["Critical"] >= 3:
         total_deductions += 30  # Executive escalation threshold
+        print(f"    Executive threshold penalty: -30 points (3+ critical issues)")
     
     if severity_counts["Critical"] + severity_counts["High"] >= 10:
         total_deductions += 20  # Production readiness concern
+        print(f"    Production readiness penalty: -20 points (10+ critical/high issues)")
     
     # Calculate final score
     final_score = max(0, base_score - total_deductions)
+    
+    print(f"  🎯 Final calculation: {base_score} - {total_deductions} = {final_score}")
     
     # Executive score bands
     if final_score >= 90:
@@ -370,29 +380,30 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 
 """
 
-    # Add previous issues resolution status
-    if previous_issues:
-        display_text += """<details>
-<summary><strong>📈 Previous Issues Resolution Status</strong> (Click to expand)</summary>
-
-| Previous Issue | Status | Details |
-|----------------|--------|---------|
+    # Add Critical Issues Summary Section
+    if critical_count > 0:
+        display_text += """## 🚨 Critical Issues Summary
 """
-        for issue in previous_issues:
-            status = issue.get("status", "UNKNOWN")
-            status_emoji = {"RESOLVED": "✅", "PARTIALLY_RESOLVED": "⚠️", "NOT_ADDRESSED": "❌", "WORSENED": "🔴"}.get(status, "❓")
-            original = issue.get("original_issue", "")[:80]
-            details = issue.get("details", "")[:100]
-            display_text += f"| {original}... | {status_emoji} {status} | {details}... |\n"
+        critical_findings = [f for f in findings if str(f.get("severity", "")).upper() == "CRITICAL"]
+        for finding in critical_findings:
+            line = finding.get("line_number", "N/A")
+            issue = str(finding.get("finding", "No description available"))
+            recommendation = str(finding.get("recommendation", finding.get("finding", "")))
+            filename = finding.get("filename", "Unknown")
+            
+            display_text += f"""   * **File {filename}, Line {line}:** {issue}
+     *Recommendation:* {recommendation}
+"""
         
-        display_text += "\n</details>\n\n"
+        display_text += "\n*Critical issues are also posted as inline comments on specific lines.*\n\n"
 
+    # Remove the previous issues section and enhance current findings table
     if findings:
         display_text += """<details>
 <summary><strong>🔍 Current Review Findings</strong> (Click to expand)</summary>
 
-| Priority | File | Line | Issue (12 words max) | Business Impact (12 words max) |
-|----------|------|------|---------------------|--------------------------------|
+| Priority | File | Line | Issue (12 words) | Business Impact (12 words) | Previous Issue | Status |
+|----------|------|------|------------------|----------------------------|----------------|--------|
 """
         
         severity_order = {"Critical": 1, "High": 2, "Medium": 3, "Low": 4}
@@ -407,9 +418,13 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
             issue = str(finding.get("finding", ""))  # Already limited to 12 words in JSON
             business_impact_text = str(finding.get("business_impact", ""))  # Already limited to 12 words
             
+            # Check if this is a previous issue (simplified logic)
+            is_previous = "No"  # Default - can be enhanced with actual previous issue tracking
+            resolution_status = "New"  # Default - can be enhanced with actual status tracking
+            
             priority_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(severity, "🟡")
             
-            display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue} | {business_impact_text} |\n"
+            display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue} | {business_impact_text} | {is_previous} | {resolution_status} |\n"
         
         display_text += "\n</details>\n\n"
 
