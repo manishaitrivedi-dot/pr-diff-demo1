@@ -48,7 +48,7 @@ PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level Python code revi
 1.  **You are reviewing a code file for executive-level analysis.** Focus on business impact, technical debt, security risks, and maintainability.
 2.  **Focus your review on the most critical aspects.** Prioritize findings that have business impact or security implications.
 3.  **Infer context from the full code.** Base your review on the complete file provided.
-4.  **Your entire response MUST be under 65,000 characters.** Prioritize findings with `High` or `Critical` severity. If the review is extensive, omit `Low` severity findings to meet the length constraint.
+4.  **Your entire response MUST be under 65,000 characters.** Include findings of all severities but prioritize Critical and High severity issues.
 
 # REVIEW PRIORITIES (Strict Order)
 1.  Security & Correctness
@@ -57,9 +57,15 @@ PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level Python code revi
 4.  Readability & Maintainability
 5.  Testability
 
+# SEVERITY GUIDELINES (Be Realistic and Balanced)
+-   **Critical:** Security vulnerabilities, data loss risks, system crashes
+-   **High:** Error handling gaps, performance bottlenecks, significant maintainability issues
+-   **Medium:** Code quality improvements, minor performance issues, documentation gaps
+-   **Low:** Style improvements, minor optimizations, non-critical suggestions
+
 # ELIGIBILITY CRITERIA FOR FINDINGS (ALL must be met)
 -   **Evidence:** Quote the exact code snippet and cite the line number.
--   **Severity:** Assign {Low | Medium | High | Critical}.
+-   **Severity:** Assign {Low | Medium | High | Critical} - BE REALISTIC, most issues should be Medium or Low.
 -   **Impact & Action:** Briefly explain the issue and provide a minimal, safe correction.
 -   **Non-trivial:** Skip purely stylistic nits (e.g., import order, line length) that a linter would catch.
 
@@ -73,7 +79,7 @@ PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level Python code revi
 ---
 # OUTPUT FORMAT (Strict, professional, audit-ready)
 
-Your entire response MUST be under 65,000 characters. Prioritize findings with High or Critical severity. If the review is extensive, omit Low severity findings to meet the length constraint.
+Your entire response MUST be under 65,000 characters. Include findings of all severity levels with realistic severity assignments.
 
 ## Code Review Summary
 *A 2-3 sentence high-level summary. Mention the key strengths and the most critical areas for improvement.*
@@ -114,7 +120,7 @@ Follow these instructions to populate the JSON fields:
 5.  **`security_risk_level` (string):** Determine security risk as "LOW", "MEDIUM", "HIGH", or "CRITICAL".
 6.  **`maintainability_rating` (string):** Rate maintainability as "POOR", "FAIR", "GOOD", or "EXCELLENT".
 7.  **`detailed_findings` (array of objects):** Create an array of objects, where each object represents a single, distinct issue found in the code:
-         -   **`severity`**: Assess and assign severity: "Low", "Medium", "High", or "Critical".
+         -   **`severity`**: Assign severity realistically: "Low", "Medium", "High", or "Critical". MOST ISSUES SHOULD BE Medium or Low. Only use Critical for security vulnerabilities or data loss risks. Only use High for significant errors or performance issues.
          -   **`category`**: Assign category: "Security", "Performance", "Maintainability", "Best Practices", "Documentation", or "Error Handling".
          -   **`line_number`**: Extract the specific line number if mentioned in the review. If no line number is available, use "N/A".
          -   **`function_context`**: From the review text, identify the function or class name where the issue is located. If not applicable, use "global scope".
@@ -138,11 +144,13 @@ Follow these instructions to populate the JSON fields:
          -   **`status`**: "RESOLVED", "PARTIALLY_RESOLVED", "NOT_ADDRESSED", or "WORSENED"
          -   **`details`**: Explanation of current status
 
-**CRITICAL INSTRUCTION FOR LARGE REVIEWS:**
-Your entire response MUST be under {MAX_CHARS_FOR_FINAL_SUMMARY_FILE} characters. If the number of findings is very large, you MUST prioritize.
--   First, only include findings with **'Critical' and 'High' severity** in the `detailed_findings` array.
--   If there is still not enough space, summarize the 'Medium' severity findings in the main `executive_summary` field instead of listing them individually.
--   'Low' severity findings can be ignored if space is limited.
+**CRITICAL INSTRUCTION FOR BALANCED REVIEWS:**
+Your entire response MUST be under {MAX_CHARS_FOR_FINAL_SUMMARY_FILE} characters. Include findings of all severity levels with realistic severity assignments:
+-   Use "Critical" only for security vulnerabilities, data loss risks, or system crashes
+-   Use "High" only for significant error handling gaps or major performance issues  
+-   Use "Medium" for code quality improvements and minor performance issues
+-   Use "Low" for style improvements and non-critical suggestions
+-   REALISTIC DISTRIBUTION: Expect mostly Medium (40-50%) and Low (30-40%) severity findings, with fewer High (10-20%) and very few Critical (0-5%)
 
 Here are the individual code reviews to process:
 {ALL_REVIEWS_CONTENT}
@@ -412,6 +420,7 @@ def format_executive_pr_display(json_response: dict, processed_files: list, prev
     critical_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "CRITICAL")
     high_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "HIGH")
     medium_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "MEDIUM")
+    low_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "LOW")
     
     risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}
     quality_emoji = "🟢" if quality_score >= 80 else ("🟡" if quality_score >= 60 else "🔴")
@@ -439,6 +448,7 @@ def format_executive_pr_display(json_response: dict, processed_files: list, prev
 | 🔴 Critical | {critical_count} | Immediate fix required |
 | 🟠 High | {high_count} | Fix within sprint |
 | 🟡 Medium | {medium_count} | Plan for next release |
+| 🟢 Low | {low_count} | Optional improvements |
 
 """
 
