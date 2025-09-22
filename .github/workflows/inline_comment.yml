@@ -20,7 +20,7 @@ jobs:
           mkdir chunks reviews
           cp scripts/simple_test.py chunks/
       
-      - run: python scripts/cortex_python_review.py chunks reviews 123 abc123
+      - run: python scripts/cortex_python_review.py chunks reviews 5 abc123
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
