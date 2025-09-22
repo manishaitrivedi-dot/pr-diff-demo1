@@ -728,21 +728,36 @@ def main():
 
         # Generate review_output.json for inline_comment.py compatibility
         criticals = []
-        for f in consolidated_json.get("detailed_findings", []):
-            if str(f.get("severity", "")).upper() == "CRITICAL":
-                critical = {
-                    "line": f.get("line_number", 1),
-                    "issue": f.get("finding", "Critical issue found"),
-                    "recommendation": f.get("recommendation", f.get("finding", "")),
-                    "severity": f.get("severity", "Critical")
-                }
-                criticals.append(critical)
+        critical_findings = [f for f in consolidated_json.get("detailed_findings", []) if str(f.get("severity", "")).upper() == "CRITICAL"]
+        
+        for f in critical_findings:
+            critical = {
+                "line": f.get("line_number", "N/A"),
+                "issue": f.get("finding", "Critical issue found"),
+                "recommendation": f.get("recommendation", f.get("finding", "")),
+                "severity": f.get("severity", "Critical"),
+                "filename": f.get("filename", "N/A"),
+                "business_impact": f.get("business_impact", "No business impact specified"),
+                "description": f.get("finding", "Critical issue found")  # Add explicit description field
+            }
+            criticals.append(critical)
+
+        # Create a proper critical issues summary for inline_comment.py
+        critical_summary = ""
+        if critical_findings:
+            critical_summary = "Critical Issues Summary:\n"
+            for i, finding in enumerate(critical_findings, 1):
+                line_num = finding.get("line_number", "N/A")
+                issue_desc = finding.get("finding", "Critical issue found")
+                critical_summary += f"* **Line {line_num}:** {issue_desc}\n"
 
         review_output_data = {
             "full_review": executive_summary,
             "full_review_markdown": executive_summary,
             "full_review_json": consolidated_json,
             "criticals": criticals,
+            "critical_summary": critical_summary,  # Add explicit critical summary
+            "critical_count": len(critical_findings),
             "file": processed_files[0] if processed_files else "unknown",
             "timestamp": datetime.now().isoformat()
         }
