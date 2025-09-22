@@ -483,14 +483,20 @@ def format_executive_pr_display(json_response: dict, processed_files: list, has_
         
         display_text += "\n*Critical issues are also posted as inline comments on specific lines.*\n\n"
 
-    # Add Previous Review Findings Section (Client Requirement)
-    if has_previous_context and previous_issues_resolved:
-        total_resolved = sum(1 for issue in previous_issues_resolved if issue.get("status") == "RESOLVED")
-        total_partial = sum(1 for issue in previous_issues_resolved if issue.get("status") == "PARTIALLY_RESOLVED")
-        total_pending = sum(1 for issue in previous_issues_resolved if issue.get("status") == "NOT_ADDRESSED")
-        total_worsened = sum(1 for issue in previous_issues_resolved if issue.get("status") == "WORSENED")
+    # Add Previous Review Findings Section (Client Requirement) - ALWAYS SHOW IF PREVIOUS CONTEXT EXISTS
+    if has_previous_context:
+        # DEBUG: Print what data we have
+        print(f"DEBUG: has_previous_context={has_previous_context}")
+        print(f"DEBUG: previous_issues_resolved length={len(previous_issues_resolved)}")
+        print(f"DEBUG: previous_issues_resolved data={previous_issues_resolved}")
         
-        display_text += f"""## 📋 Previous Review Status Summary
+        if previous_issues_resolved:
+            total_resolved = sum(1 for issue in previous_issues_resolved if issue.get("status") == "RESOLVED")
+            total_partial = sum(1 for issue in previous_issues_resolved if issue.get("status") == "PARTIALLY_RESOLVED")
+            total_pending = sum(1 for issue in previous_issues_resolved if issue.get("status") == "NOT_ADDRESSED")
+            total_worsened = sum(1 for issue in previous_issues_resolved if issue.get("status") == "WORSENED")
+            
+            display_text += f"""## 📋 Previous Review Status Summary
 
 **Total Previous Issues:** {len(previous_issues_resolved)} | **Resolved:** {total_resolved} | **Partially Resolved:** {total_partial} | **Pending:** {total_pending} | **Worsened:** {total_worsened}
 
@@ -500,35 +506,56 @@ def format_executive_pr_display(json_response: dict, processed_files: list, has_
 | Issue Description | Status | Line | Details |
 |-------------------|--------|------|---------|
 """
-        
-        # Sort previous issues by status priority (Worsened > Pending > Partially Resolved > Resolved)
-        status_priority = {"WORSENED": 1, "NOT_ADDRESSED": 2, "PARTIALLY_RESOLVED": 3, "RESOLVED": 4}
-        sorted_previous = sorted(previous_issues_resolved, 
-                               key=lambda x: status_priority.get(x.get("status", "RESOLVED"), 4))
-        
-        for issue in sorted_previous:
-            original_issue = str(issue.get("original_issue", "Unknown issue"))
-            # Truncate to 12 characters as per client requirement
-            issue_desc = original_issue[:12] + "..." if len(original_issue) > 12 else original_issue
             
-            status = issue.get("status", "UNKNOWN")
-            details = str(issue.get("details", "No details provided"))
+            # Sort previous issues by status priority (Worsened > Pending > Partially Resolved > Resolved)
+            status_priority = {"WORSENED": 1, "NOT_ADDRESSED": 2, "PARTIALLY_RESOLVED": 3, "RESOLVED": 4}
+            sorted_previous = sorted(previous_issues_resolved, 
+                                   key=lambda x: status_priority.get(x.get("status", "RESOLVED"), 4))
             
-            # Extract line number if mentioned in details, otherwise use N/A
-            line_match = re.search(r'line\s*(\d+)', details.lower())
-            line_number = line_match.group(1) if line_match else "N/A"
+            for issue in sorted_previous:
+                original_issue = str(issue.get("original_issue", "Unknown issue"))
+                # Truncate to 12 characters as per client requirement
+                issue_desc = original_issue[:12] + "..." if len(original_issue) > 12 else original_issue
+                
+                status = issue.get("status", "UNKNOWN")
+                details = str(issue.get("details", "No details provided"))
+                
+                # Extract line number if mentioned in details, otherwise use N/A
+                line_match = re.search(r'line\s*(\d+)', details.lower())
+                line_number = line_match.group(1) if line_match else "N/A"
+                
+                # Status formatting with emojis
+                status_display = {
+                    "RESOLVED": "✅ Resolved",
+                    "PARTIALLY_RESOLVED": "🟡 Partial",
+                    "NOT_ADDRESSED": "❌ Pending", 
+                    "WORSENED": "🔴 Worsened"
+                }.get(status, f"❓ {status}")
+                
+                display_text += f"| {issue_desc} | {status_display} | {line_number} | {details} |\n"
             
-            # Status formatting with emojis
-            status_display = {
-                "RESOLVED": "✅ Resolved",
-                "PARTIALLY_RESOLVED": "🟡 Partial",
-                "NOT_ADDRESSED": "❌ Pending", 
-                "WORSENED": "🔴 Worsened"
-            }.get(status, f"❓ {status}")
-            
-            display_text += f"| {issue_desc} | {status_display} | {line_number} | {details} |\n"
-        
-        display_text += "\n</details>\n\n"
+            display_text += "\n</details>\n\n"
+        else:
+            # SHOW EVEN IF NO DATA - This means LLM didn't populate previous_issues_resolved properly
+            display_text += f"""## 📋 Previous Review Status Summary
+
+**Status:** Previous review context found, but detailed status tracking is unavailable in this analysis.
+
+<details>
+<summary><strong>⚠️ Previous Review Data Missing</strong> (Click to expand)</summary>
+
+The system detected a previous review exists for this PR, but the detailed issue tracking data (`previous_issues_resolved`) was not properly populated by the analysis engine. 
+
+**Possible reasons:**
+- LLM did not generate the `previous_issues_resolved` section in JSON response
+- Previous review data structure changed
+- Database query returned context but not detailed findings
+
+**Current Status:** All current findings are being treated as new issues.
+
+</details>
+
+"""
 
     # Current Review Findings Section
     if findings:
