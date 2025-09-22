@@ -375,22 +375,8 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
     else:
         return max(0, final_score)  # Poor - immediate action required
 
-def format_executive_pr_display(json_response: dict, processed_files: list, previous_issues: list = None) -> str:        else:
-            # Try fuzzy matching by file and line
-            file_line_key = f"{file_name}:{line_num}:"
-            fuzzy_matches = [k for k in previous_lookup.keys() if k.startswith(file_line_key)]
-            
-            if fuzzy_matches:
-                finding["is_previous_issue"] = "Yes"
-                finding["resolution_status"] = "Partially Resolved"
-                print(f"    ≈ Found fuzzy match: {file_name}:{line_num}")
-            else:
-                finding["is_previous_issue"] = "No" 
-                finding["resolution_status"] = "New"
-    
-    return current_findings
-
-def format_executive_pr_display(json_response: dict, processed_files: list, previous_issues: list = None) -> str:
+def format_executive_pr_display(json_response: dict, processed_files: list, previous_issues: list = None) -> str:def format_executive_pr_display(json_response: dict, processed_files: list, previous_issues: list = None) -> str:
+    summary = json_response.get("executive_summary", "Technical analysis completed")
     summary = json_response.get("executive_summary", "Technical analysis completed")
     findings = json_response.get("detailed_findings", [])
     
