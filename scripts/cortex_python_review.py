@@ -10,7 +10,10 @@ from datetime import datetime
 MODEL = "openai-gpt-4.1"
 MAX_CHARS_FOR_FINAL_SUMMARY_FILE = 65000
 MAX_TOKENS_FOR_SUMMARY_INPUT = 100000
-FILE_TO_REVIEW = "scripts/simple_test.py"
+
+# Dynamic file pattern - processes all Python files in scripts directory
+SCRIPTS_DIRECTORY = "scripts"  # Base directory to scan
+FILE_PATTERN = "*.py"  # Pattern to match Python files
 
 # ---------------------
 # Snowflake session
@@ -107,8 +110,8 @@ Follow these instructions to populate the JSON fields:
          -   **`category`**: Assign category: "Security", "Performance", "Maintainability", "Best Practices", "Documentation", or "Error Handling".
          -   **`line_number`**: Extract the specific line number if mentioned in the review. If no line number is available, use "N/A".
          -   **`function_context`**: From the review text, identify the function or class name where the issue is located. If not applicable, use "global scope".
-         -   **`finding`**: Write a clear, concise description of the issue, its potential impact, and a concrete recommendation.
-         -   **`business_impact`**: Explain how this affects business operations or risk.
+         -   **`finding`**: Write a clear, concise description of the issue, its potential impact, and a concrete recommendation. LIMIT TO 12 WORDS MAXIMUM.
+         -   **`business_impact`**: Explain how this affects business operations or risk. LIMIT TO 12 WORDS MAXIMUM.
          -   **`recommendation`**: Provide specific technical solution.
          -   **`effort_estimate`**: Estimate effort as "LOW", "MEDIUM", or "HIGH".
          -   **`priority_ranking`**: Assign priority ranking (1 = highest priority).
@@ -150,6 +153,38 @@ CRITICAL INSTRUCTION: You must analyze the new code changes with full awareness 
 
 {consolidated_template}
 """
+
+def get_changed_python_files(folder_path=None):
+    """
+    Dynamically get all Python files from the specified folder or scripts directory.
+    Uses wildcard pattern matching for flexibility.
+    """
+    import glob
+    
+    # If no folder specified, use the scripts directory
+    if not folder_path:
+        folder_path = SCRIPTS_DIRECTORY
+        
+    if not os.path.exists(folder_path):
+        print(f"❌ Directory {folder_path} not found")
+        return []
+    
+    # Use glob pattern to find all Python files
+    pattern = os.path.join(folder_path, FILE_PATTERN)
+    py_files = glob.glob(pattern)
+    
+    # Also check subdirectories recursively
+    recursive_pattern = os.path.join(folder_path, "**", FILE_PATTERN)
+    py_files.extend(glob.glob(recursive_pattern, recursive=True))
+    
+    # Remove duplicates and sort
+    py_files = sorted(list(set(py_files)))
+    
+    print(f"📁 Found {len(py_files)} Python files in {folder_path} using pattern '{FILE_PATTERN}':")
+    for file in py_files:
+        print(f"  - {file}")
+    
+    return py_files
 
 def build_prompt_for_individual_review(code_text: str, filename: str = "code_file") -> str:
     prompt = PROMPT_TEMPLATE_INDIVIDUAL.replace("{PY_CONTENT}", code_text)
@@ -201,6 +236,94 @@ def chunk_large_file(code_text: str, max_chunk_size: int = 50000) -> list:
     
     return chunks
 
+def calculate_executive_quality_score(findings: list, total_lines_of_code: int) -> int:
+    """
+    Executive-level rule-based quality scoring (0-100).
+    Does not rely on LLM - uses deterministic business logic.
+    
+    Scoring Logic:
+    - Start with base score of 100
+    - Deduct points based on severity and affected lines
+    - Critical issues have exponential impact on score
+    """
+    if not findings:
+        return 100
+    
+    base_score = 100
+    total_deductions = 0
+    
+    # Severity weightings (executive impact focus)
+    severity_weights = {
+        "Critical": 25,    # Each critical issue deducts 25 points
+        "High": 12,        # Each high issue deducts 12 points  
+        "Medium": 5,       # Each medium issue deducts 5 points
+        "Low": 1           # Each low issue deducts 1 point
+    }
+    
+    # Count issues by severity
+    severity_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+    total_affected_lines = 0
+    
+    for finding in findings:
+        severity = str(finding.get("severity", "Low")).title()
+        if severity in severity_counts:
+            severity_counts[severity] += 1
+            
+        # Count affected lines (treat N/A as 1 line)
+        line_num = finding.get("line_number", "N/A")
+        if line_num != "N/A":
+            try:
+                total_affected_lines += 1  # Each finding affects at least 1 line
+            except:
+                total_affected_lines += 1
+        else:
+            total_affected_lines += 1
+    
+    # Calculate base deductions from severity
+    for severity, count in severity_counts.items():
+        if count > 0:
+            weight = severity_weights[severity]
+            
+            # Progressive penalty: more issues of same severity = exponential impact
+            if severity == "Critical":
+                # Critical issues have compound effect: 25, 35, 50, 70 for 1,2,3,4 issues
+                deduction = sum(weight + (i * 10) for i in range(count))
+            elif severity == "High":
+                # High issues: 12, 18, 26, 36 for 1,2,3,4 issues
+                deduction = sum(weight + (i * 6) for i in range(count))
+            else:
+                # Medium/Low: linear scaling
+                deduction = weight * count
+                
+            total_deductions += deduction
+    
+    # Line coverage penalty (if affecting significant portion of codebase)
+    if total_lines_of_code > 0:
+        affected_ratio = total_affected_lines / total_lines_of_code
+        if affected_ratio > 0.1:  # More than 10% of code has issues
+            coverage_penalty = min(20, int(affected_ratio * 100))  # Max 20 point penalty
+            total_deductions += coverage_penalty
+    
+    # Critical threshold penalties (executive concerns)
+    if severity_counts["Critical"] >= 3:
+        total_deductions += 30  # Executive escalation threshold
+    
+    if severity_counts["Critical"] + severity_counts["High"] >= 10:
+        total_deductions += 20  # Production readiness concern
+    
+    # Calculate final score
+    final_score = max(0, base_score - total_deductions)
+    
+    # Executive score bands
+    if final_score >= 90:
+        return min(100, final_score)  # Excellent
+    elif final_score >= 75:
+        return final_score  # Good
+    elif final_score >= 50:
+        return final_score  # Fair - needs attention
+    else:
+        return max(0, final_score)  # Poor - immediate action required
+    
 def format_executive_pr_display(json_response: dict, processed_files: list) -> str:
     summary = json_response.get("executive_summary", "Technical analysis completed")
     findings = json_response.get("detailed_findings", [])
@@ -268,19 +391,21 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
         display_text += """<details>
 <summary><strong>🔍 Current Review Findings</strong> (Click to expand)</summary>
 
-| Priority | File | Line | Issue | Business Impact |
-|----------|------|------|-------|-----------------|
+| Priority | File | Line | Issue (12 words max) | Business Impact (12 words max) |
+|----------|------|------|---------------------|--------------------------------|
 """
         
         severity_order = {"Critical": 1, "High": 2, "Medium": 3, "Low": 4}
         sorted_findings = sorted(findings, key=lambda x: severity_order.get(str(x.get("severity", "Low")), 4))
         
-        for finding in sorted_findings[:15]:
+        for finding in sorted_findings[:25]:  # Show more findings since they're shorter now
             severity = str(finding.get("severity", "Medium"))
             filename = finding.get("filename", "N/A")
             line = finding.get("line_number", "N/A")
-            issue = str(finding.get("finding", ""))[:100] + ("..." if len(str(finding.get("finding", ""))) > 100 else "")
-            business_impact_text = str(finding.get("business_impact", ""))[:80] + ("..." if len(str(finding.get("business_impact", ""))) > 80 else "")
+            
+            # Use the 12-word limited fields from JSON
+            issue = str(finding.get("finding", ""))  # Already limited to 12 words in JSON
+            business_impact_text = str(finding.get("business_impact", ""))  # Already limited to 12 words
             
             priority_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(severity, "🟡")
             
@@ -325,13 +450,26 @@ def main():
             pull_request_number = None
         commit_sha = sys.argv[4]
         directory_mode = True
+        
+        # Dynamically get all Python files in the directory
+        python_files = get_changed_python_files(folder_path)
+        if not python_files:
+            print("❌ No Python files found in the specified directory")
+            return
+            
     else:
-        folder_path = None
+        # Fallback for single file mode - use scripts directory with wildcard pattern
+        python_files = get_changed_python_files(SCRIPTS_DIRECTORY)
+        if not python_files:
+            print(f"❌ No Python files found in {SCRIPTS_DIRECTORY} directory using pattern {FILE_PATTERN}")
+            return
+            
+        folder_path = SCRIPTS_DIRECTORY
         output_folder_path = "output_reviews"
         pull_request_number = 0
         commit_sha = "test"
         directory_mode = False
-        print(f"Running in single-file mode with: {FILE_TO_REVIEW}")
+        print(f"Running in dynamic pattern mode with {len(python_files)} Python files from {SCRIPTS_DIRECTORY}")
 
     if os.path.exists(output_folder_path):
         import shutil
@@ -344,22 +482,8 @@ def main():
     print("\n🔍 STAGE 1: Individual File Analysis...")
     print("=" * 60)
     
-    if directory_mode:
-        files_to_process = [f for f in os.listdir(folder_path) if f.endswith((".py", ".sql"))]
-    else:
-        if not os.path.exists(FILE_TO_REVIEW):
-            print(f"❌ File {FILE_TO_REVIEW} not found")
-            return
-        files_to_process = [FILE_TO_REVIEW]
-        folder_path = os.path.dirname(FILE_TO_REVIEW)
-
-    for filename in files_to_process:
-        if directory_mode:
-            file_path = os.path.join(folder_path, filename)
-        else:
-            file_path = filename
-            filename = os.path.basename(filename)
-            
+    for file_path in python_files:
+        filename = os.path.basename(file_path)
         print(f"\n--- Reviewing file: {filename} ---")
         processed_files.append(filename)
 
@@ -462,6 +586,16 @@ def main():
         try:
             consolidated_json = json.loads(consolidated_raw)
             print("  ✅ Successfully parsed consolidated JSON response")
+            
+            # OVERRIDE: Calculate rule-based quality score (don't trust LLM for this)
+            findings = consolidated_json.get("detailed_findings", [])
+            total_lines = sum(len(review.get("review_feedback", "").split('\n')) for review in all_individual_reviews)
+            
+            rule_based_score = calculate_executive_quality_score(findings, total_lines)
+            consolidated_json["quality_score"] = rule_based_score
+            
+            print(f"  🎯 Rule-based quality score calculated: {rule_based_score}/100 (overriding LLM score)")
+            
         except json.JSONDecodeError as e:
             print(f"  ⚠️ JSON parsing failed: {e}")
             json_match = re.search(r'\{.*\}', consolidated_raw, re.DOTALL)
