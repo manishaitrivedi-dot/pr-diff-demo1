@@ -375,8 +375,7 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
     else:
         return max(0, final_score)  # Poor - immediate action required
 
-def format_executive_pr_display(json_response: dict, processed_files: list, previous_issues: list = None) -> str:def format_executive_pr_display(json_response: dict, processed_files: list, previous_issues: list = None) -> str:
-    summary = json_response.get("executive_summary", "Technical analysis completed")
+def format_executive_pr_display(json_response: dict, processed_files: list, previous_issues: list = None) -> str:
     summary = json_response.get("executive_summary", "Technical analysis completed")
     findings = json_response.get("detailed_findings", [])
     
