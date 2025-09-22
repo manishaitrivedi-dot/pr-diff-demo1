@@ -417,12 +417,9 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
     else:
         return max(25, final_score)  # Poor - but never below 25 for functional code
 
-def format_executive_pr_display(json_response: dict, processed_files: list, previous_issues: list = None) -> str:
+def format_executive_pr_display(json_response: dict, processed_files: list, has_previous_context: bool = False) -> str:
     summary = json_response.get("executive_summary", "Technical analysis completed")
     findings = json_response.get("detailed_findings", [])
-    
-    # LLM HANDLES TRACKING - No need for manual comparison
-    # The LLM has already populated is_previous_issue and resolution_status fields
     
     quality_score = json_response.get("quality_score", 75)
     business_impact = json_response.get("business_impact", "MEDIUM")
@@ -486,13 +483,21 @@ def format_executive_pr_display(json_response: dict, processed_files: list, prev
         
         display_text += "\n*Critical issues are also posted as inline comments on specific lines.*\n\n"
 
-    # LLM-enhanced findings table with intelligent tracking
+    # Conditional display based on previous context
     if findings:
         display_text += """<details>
 <summary><strong>🔍 Current Review Findings</strong> (Click to expand)</summary>
 
-| Priority | File | Line | Issue (12 words) | Business Impact (12 words) | Previous Issue | Status |
+"""
+        
+        # Show different table headers based on whether we have previous context
+        if has_previous_context:
+            display_text += """| Priority | File | Line | Issue (12 words) | Business Impact (12 words) | Previous Issue | Status |
 |----------|------|------|------------------|----------------------------|----------------|--------|
+"""
+        else:
+            display_text += """| Priority | File | Line | Issue (12 words) | Business Impact (12 words) |
+|----------|------|------|------------------|----------------------------|
 """
         
         severity_order = {"Critical": 1, "High": 2, "Medium": 3, "Low": 4}
@@ -507,13 +512,16 @@ def format_executive_pr_display(json_response: dict, processed_files: list, prev
             issue = str(finding.get("finding", ""))  # Already limited to 12 words in JSON
             business_impact_text = str(finding.get("business_impact", ""))  # Already limited to 12 words
             
-            # Get LLM-determined previous issue tracking data
-            is_previous = finding.get("is_previous_issue", "No")  # LLM populates this
-            resolution_status = finding.get("resolution_status", "New")  # LLM populates this
-            
             priority_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(severity, "🟡")
             
-            display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue} | {business_impact_text} | {is_previous} | {resolution_status} |\n"
+            # Build row based on whether we have previous context
+            if has_previous_context:
+                # Get LLM-determined previous issue tracking data
+                is_previous = finding.get("is_previous_issue", "No")  # LLM populates this
+                resolution_status = finding.get("resolution_status", "New")  # LLM populates this
+                display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue} | {business_impact_text} | {is_previous} | {resolution_status} |\n"
+            else:
+                display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue} | {business_impact_text} |\n"
         
         display_text += "\n</details>\n\n"
 
@@ -647,6 +655,8 @@ def main():
         # CRITICAL: Retrieve previous review context AND detailed findings
         previous_review_context = None
         previous_detailed_findings = []
+        has_previous_context = False
+        
         if pull_request_number and pull_request_number != 0:
             try:
                 create_table_query = """
@@ -672,6 +682,7 @@ def main():
                 
                 if result:
                     previous_review_context = result[0]["REVIEW_SUMMARY"][:3000]  # Truncate for prompt
+                    has_previous_context = True
                     
                     # Parse previous detailed findings for comparison
                     try:
@@ -686,6 +697,7 @@ def main():
                     print("  📋 Retrieved previous review context - this is a subsequent commit review")
                 else:
                     print("  📋 No previous review found - this is the initial commit review")
+                    has_previous_context = False
                     
             except Exception as e:
                 print(f"  Warning: Could not retrieve previous review: {e}")
@@ -744,7 +756,8 @@ def main():
                     "previous_issues_resolved": []
                 }
 
-        executive_summary = format_executive_pr_display(consolidated_json, processed_files, previous_detailed_findings)
+        # Pass has_previous_context to format function
+        executive_summary = format_executive_pr_display(consolidated_json, processed_files, has_previous_context)
         
         consolidated_path = os.path.join(output_folder_path, "consolidated_executive_summary.md")
         with open(consolidated_path, 'w', encoding='utf-8') as f:
@@ -813,7 +826,7 @@ def main():
         print(f"📊 Executive summary: 1 (PROMPT 2)")
         print(f"🎯 Quality Score: {consolidated_json.get('quality_score', 'N/A')}/100")
         print(f"📈 Findings: {len(consolidated_json.get('detailed_findings', []))}")
-        if previous_review_context:
+        if has_previous_context:
             print(f"🔄 Previous context included: ✅ Subsequent commit review")
         else:
             print(f"🔄 Previous context: ❌ Initial commit review")
