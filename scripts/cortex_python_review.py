@@ -291,7 +291,7 @@ def get_previous_review_context(pull_request_number):
         return None, [], False
         
     try:
-        # Try to get previous review
+        # Try to get previous review with proper VARIANT handling
         query = f"""
             SELECT REVIEW_SUMMARY, DETAILED_FINDINGS FROM CODE_REVIEW_LOG 
             WHERE PULL_REQUEST_NUMBER = {pull_request_number}
@@ -304,18 +304,34 @@ def get_previous_review_context(pull_request_number):
             previous_context = result[0]["REVIEW_SUMMARY"][:3000] if result[0]["REVIEW_SUMMARY"] else None
             previous_findings = []
             
-            # Parse previous detailed findings
+            # Parse previous detailed findings with better error handling
             try:
                 prev_findings_json = result[0]["DETAILED_FINDINGS"]
                 if prev_findings_json:
+                    # Handle both VARIANT and VARCHAR storage
                     if isinstance(prev_findings_json, str):
                         previous_findings = json.loads(prev_findings_json)
+                    elif hasattr(prev_findings_json, 'as_dict'):
+                        # Snowflake VARIANT type
+                        previous_findings = prev_findings_json.as_dict() if prev_findings_json.as_dict() else []
+                    elif isinstance(prev_findings_json, (list, dict)):
+                        previous_findings = prev_findings_json if isinstance(prev_findings_json, list) else [prev_findings_json]
                     else:
-                        previous_findings = prev_findings_json
+                        # Try to convert to string and parse
+                        previous_findings = json.loads(str(prev_findings_json))
+                    
                     print(f"  📋 Retrieved {len(previous_findings)} previous findings for comparison")
             except Exception as e:
                 print(f"  Warning: Could not parse previous findings: {e}")
-                previous_findings = []
+                # Try alternative parsing
+                try:
+                    prev_data_str = str(result[0]["DETAILED_FINDINGS"])
+                    if prev_data_str and prev_data_str != 'None':
+                        previous_findings = json.loads(prev_data_str)
+                        print(f"  📋 Retrieved {len(previous_findings)} previous findings using fallback parsing")
+                except:
+                    previous_findings = []
+                    print(f"  Warning: All parsing methods failed, proceeding without previous findings")
             
             print("  📋 Retrieved previous review context - this is a subsequent commit review")
             return previous_context, previous_findings, True
@@ -335,22 +351,104 @@ def store_current_review(pull_request_number, commit_sha, review_summary, detail
         return False
         
     try:
-        insert_sql = """
+        # Fix PARSE_JSON issue by using proper Snowflake syntax
+        findings_json = json.dumps(detailed_findings)
+        insert_sql = f"""
             INSERT INTO CODE_REVIEW_LOG (PULL_REQUEST_NUMBER, COMMIT_SHA, REVIEW_SUMMARY, DETAILED_FINDINGS)
-            VALUES (?, ?, ?, PARSE_JSON(?))
+            VALUES ({pull_request_number}, '{commit_sha}', ?, PARSE_JSON(?))
         """
         params = [
-            pull_request_number, 
-            commit_sha, 
             review_summary[:8000],  # Truncate for storage
-            json.dumps(detailed_findings)
+            findings_json
         ]
         session.sql(insert_sql, params=params).collect()
         print(f"  ✅ Current review stored for future comparisons")
         return True
     except Exception as e:
-        print(f"  Warning: Could not store review: {e}")
-        return False
+        print(f"  Warning: PARSE_JSON failed, trying alternative approach: {e}")
+        
+        # Fallback: Store as VARCHAR and parse later
+        try:
+            fallback_sql = f"""
+                INSERT INTO CODE_REVIEW_LOG (PULL_REQUEST_NUMBER, COMMIT_SHA, REVIEW_SUMMARY, DETAILED_FINDINGS)
+                VALUES ({pull_request_number}, '{commit_sha}', ?, ?)
+            """
+            params = [
+                review_summary[:8000],
+                findings_json
+            ]
+            session.sql(fallback_sql, params=params).collect()
+            print(f"  ✅ Current review stored using fallback method")
+            return True
+        except Exception as e2:
+            print(f"  ❌ Both storage methods failed: {e2}")
+            return False
+
+def insert_test_previous_review():
+    """
+    Insert a fake previous review for testing the comparison functionality.
+    """
+    if not database_context_set:
+        print("❌ Cannot insert test data - database not available")
+        return
+        
+    try:
+        # Create some fake previous findings
+        test_findings = [
+            {
+                "severity": "Critical",
+                "category": "Security", 
+                "line_number": "25",
+                "function_context": "main",
+                "finding": "Hardcoded database credentials exposed in source code",
+                "business_impact": "Data breach risk, compliance violation",
+                "recommendation": "Move credentials to secure environment variables",
+                "effort_estimate": "LOW",
+                "priority_ranking": 1,
+                "filename": "cortex_python_review.py"
+            },
+            {
+                "severity": "High",
+                "category": "Error Handling",
+                "line_number": "156", 
+                "function_context": "review_with_cortex",
+                "finding": "Exception handling too broad, masks specific errors",
+                "business_impact": "Debugging difficulties, service reliability issues",
+                "recommendation": "Implement specific exception handling for known errors",
+                "effort_estimate": "MEDIUM",
+                "priority_ranking": 2,
+                "filename": "cortex_python_review.py"
+            },
+            {
+                "severity": "Medium",
+                "category": "Maintainability",
+                "line_number": "89",
+                "function_context": "get_changed_python_files", 
+                "finding": "No input validation for folder path parameter",
+                "business_impact": "Potential runtime errors in production",
+                "recommendation": "Add path validation and sanitization",
+                "effort_estimate": "LOW",
+                "priority_ranking": 3,
+                "filename": "cortex_python_review.py"
+            }
+        ]
+        
+        test_summary = """# Previous Review Summary
+Found 3 critical issues including hardcoded credentials and poor error handling. 
+Recommended immediate security fixes and improved exception management."""
+        
+        # Insert test data for PR #5
+        findings_json = json.dumps(test_findings)
+        insert_sql = f"""
+            INSERT INTO CODE_REVIEW_LOG (PULL_REQUEST_NUMBER, COMMIT_SHA, REVIEW_SUMMARY, DETAILED_FINDINGS)
+            VALUES (5, 'test_previous_commit', ?, ?)
+        """
+        params = [test_summary, findings_json]
+        session.sql(insert_sql, params=params).collect()
+        print("✅ Test previous review inserted successfully for PR #5")
+        
+    except Exception as e:
+        print(f"❌ Failed to insert test data: {e}")
 
 def get_changed_python_files(folder_path=None):
     """
@@ -637,11 +735,17 @@ def format_executive_pr_display(json_response: dict, processed_files: list, has_
 <details>
 <summary><strong>📝 Previous Commit Review Details</strong> (Click to expand)</summary>
 
-| Priority | File | Line | Issue (Previous Commit) | Business Impact |
-|----------|------|------|-------------------------|-----------------|
+| Priority | File | Line | Issue | Status | Business Impact |
+|----------|------|------|--------|--------|-----------------|
 """
         
-        # Display previous findings
+        # Create a mapping of current findings for status checking
+        current_issues_map = {}
+        for finding in findings:
+            key = f"{finding.get('filename', 'N/A')}:{finding.get('line_number', 'N/A')}"
+            current_issues_map[key] = finding.get('resolution_status', 'Unknown')
+        
+        # Display previous findings with status
         severity_order = {"Critical": 1, "High": 2, "Medium": 3, "Low": 4}
         sorted_prev_findings = sorted(previous_findings_data, key=lambda x: severity_order.get(str(x.get("severity", "Low")), 4))
         
@@ -649,12 +753,42 @@ def format_executive_pr_display(json_response: dict, processed_files: list, has_
             severity = str(finding.get("severity", "Medium"))
             filename = finding.get("filename", "N/A")
             line = finding.get("line_number", "N/A")
-            issue = str(finding.get("finding", ""))[:60] + "..." if len(str(finding.get("finding", ""))) > 60 else str(finding.get("finding", ""))
+            
+            # Limit issue to 12 characters
+            issue_full = str(finding.get("finding", ""))
+            issue = issue_full[:12] + "..." if len(issue_full) > 12 else issue_full
+            
+            # Determine status based on whether this issue still exists
+            key = f"{filename}:{line}"
+            if key in current_issues_map:
+                status = current_issues_map[key]
+            else:
+                # Check if similar issue exists by comparing issue text
+                similar_found = False
+                for current_finding in findings:
+                    if (current_finding.get('filename') == filename and 
+                        abs(int(str(current_finding.get('line_number', '0')).replace('N/A', '0')) - 
+                            int(str(line).replace('N/A', '0'))) <= 5):
+                        similar_found = True
+                        status = current_finding.get('resolution_status', 'Not Addressed')
+                        break
+                if not similar_found:
+                    status = "Resolved"
+            
+            # Status emoji
+            status_emoji = {
+                "Resolved": "✅", 
+                "New": "🆕",
+                "Not Addressed": "❌", 
+                "Partially Resolved": "🟡", 
+                "Worsened": "🔴"
+            }.get(status, "❓")
+            
             business_impact_text = str(finding.get("business_impact", ""))[:40] + "..." if len(str(finding.get("business_impact", ""))) > 40 else str(finding.get("business_impact", ""))
             
             priority_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(severity, "🟡")
             
-            display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue} | {business_impact_text} |\n"
+            display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue} | {status_emoji} {status} | {business_impact_text} |\n"
         
         display_text += "\n</details>\n\n"
         
@@ -683,13 +817,13 @@ def format_executive_pr_display(json_response: dict, processed_files: list, has_
         
         # Show different table headers ONLY if we actually have previous context
         if has_previous_context:
-            display_text += """| Priority | File | Line | Issue (12 words) | Business Impact (12 words) | Previous Issue | Status |
-|----------|------|------|------------------|----------------------------|----------------|--------|
+            display_text += """| Priority | File | Line | Issue | Business Impact | Previous Issue | Status |
+|----------|------|------|--------|------------------|----------------|--------|
 """
         else:
             # NO previous context - don't show Previous Issue and Status columns
-            display_text += """| Priority | File | Line | Issue (12 words) | Business Impact (12 words) |
-|----------|------|------|------------------|----------------------------|
+            display_text += """| Priority | File | Line | Issue | Business Impact |
+|----------|------|------|--------|------------------|
 """
         
         severity_order = {"Critical": 1, "High": 2, "Medium": 3, "Low": 4}
@@ -700,143 +834,13 @@ def format_executive_pr_display(json_response: dict, processed_files: list, has_
             filename = finding.get("filename", "N/A")
             line = finding.get("line_number", "N/A")
             
-            # Use the 12-word limited fields from JSON
-            issue = str(finding.get("finding", ""))  # Already limited to 12 words in JSON
-            business_impact_text = str(finding.get("business_impact", ""))  # Already limited to 12 words
+            # Limit issue to 12 characters (not words)
+            issue_full = str(finding.get("finding", ""))
+            issue = issue_full[:12] + "..." if len(issue_full) > 12 else issue_full
             
-            priority_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(severity, "🟡")
-            
-            # Build row based on whether we have previous context
-            if has_previous_context:
-                # Get LLM-determined previous issue tracking data
-                is_previous = finding.get("is_previous_issue", "No")  # LLM populates this
-                resolution_status = finding.get("resolution_status", "New")  # LLM populates this
-                display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue} | {business_impact_text} | {is_previous} | {resolution_status} |\n"
-            else:
-                # NO previous context - only show basic columns
-                display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue} | {business_impact_text} |\n"
-        
-        display_text += "\n</details>\n\n"
-
-    if strategic_recs:
-        display_text += """<details>
-<summary><strong>🎯 Strategic Recommendations</strong> (Click to expand)</summary>
-
-"""
-        for i, rec in enumerate(strategic_recs, 1):
-            display_text += f"{i}. {rec}\n"
-        display_text += "\n</details>\n\n"
-
-    if immediate_actions:
-        display_text += """<details>
-<summary><strong>⚡ Immediate Actions Required</strong> (Click to expand)</summary>
-
-"""
-        for i, action in enumerate(immediate_actions, 1):
-            display_text += f"{i}. {action}\n"
-        display_text += "\n</details>\n\n"
-
-    display_text += f"""---
-
-**📋 Review Summary:** {len(findings)} findings identified | **🎯 Quality Score:** {quality_score}/100 | **⚡ Critical Issues:** {critical_count}
-
-*🔬 Powered by Snowflake Cortex AI • Two-Stage Executive Analysis*"""
-
-    return display_text
-    summary = json_response.get("executive_summary", "Technical analysis completed")
-    findings = json_response.get("detailed_findings", [])
-    
-    quality_score = json_response.get("quality_score", 75)
-    business_impact = json_response.get("business_impact", "MEDIUM")
-    security_risk = json_response.get("security_risk_level", "MEDIUM")
-    tech_debt = json_response.get("technical_debt_score", "MEDIUM")
-    maintainability = json_response.get("maintainability_rating", "FAIR")
-    metrics = json_response.get("metrics", {})
-    strategic_recs = json_response.get("strategic_recommendations", [])
-    immediate_actions = json_response.get("immediate_actions", [])
-    previous_issues_resolved = json_response.get("previous_issues_resolved", [])
-    
-    critical_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "CRITICAL")
-    high_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "HIGH")
-    medium_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "MEDIUM")
-    low_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "LOW")
-    
-    risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}
-    quality_emoji = "🟢" if quality_score >= 80 else ("🟡" if quality_score >= 60 else "🔴")
-    
-    display_text = f"""# 📊 Executive Code Review Report
-
-**Files Analyzed:** {len(processed_files)} files | **Analysis Date:** {datetime.now().strftime('%Y-%m-%d')}
-
-## 🎯 Executive Summary
-{summary}
-
-## 📈 Quality Dashboard
-
-| Metric | Score | Status | Business Impact |
-|--------|-------|--------|-----------------|
-| **Overall Quality** | {quality_score}/100 | {quality_emoji} | {business_impact} Risk |
-| **Security Risk** | {security_risk} | {risk_emoji.get(security_risk, "🟡")} | Critical security concerns |
-| **Technical Debt** | {tech_debt} | {risk_emoji.get(tech_debt, "🟡")} | {len(findings)} items |
-| **Maintainability** | {maintainability} | {risk_emoji.get(maintainability, "🟡")} | Long-term sustainability |
-
-## 🔍 Issue Distribution
-
-| Severity | Count | Priority Actions |
-|----------|-------|------------------|
-| 🔴 Critical | {critical_count} | Immediate fix required |
-| 🟠 High | {high_count} | Fix within sprint |
-| 🟡 Medium | {medium_count} | Plan for next release |
-| 🟢 Low | {low_count} | Optional improvements |
-
-"""
-
-    # Add Critical Issues Summary Section
-    if critical_count > 0:
-        display_text += """## 🚨 Critical Issues Summary
-"""
-        critical_findings = [f for f in findings if str(f.get("severity", "")).upper() == "CRITICAL"]
-        for finding in critical_findings:
-            line = finding.get("line_number", "N/A")
-            issue = str(finding.get("finding", "No description available"))
-            recommendation = str(finding.get("recommendation", finding.get("finding", "")))
-            filename = finding.get("filename", "Unknown")
-            
-            display_text += f"""   * **File {filename}, Line {line}:** {issue}
-     *Recommendation:* {recommendation}
-"""
-        
-        display_text += "\n*Critical issues are also posted as inline comments on specific lines.*\n\n"
-
-    # Conditional display based on previous context - FIXED LOGIC
-    if findings:
-        display_text += """<details>
-<summary><strong>🔍 Current Review Findings</strong> (Click to expand)</summary>
-
-"""
-        
-        # Show different table headers ONLY if we actually have previous context
-        if has_previous_context:
-            display_text += """| Priority | File | Line | Issue (12 words) | Business Impact (12 words) | Previous Issue | Status |
-|----------|------|------|------------------|----------------------------|----------------|--------|
-"""
-        else:
-            # NO previous context - don't show Previous Issue and Status columns
-            display_text += """| Priority | File | Line | Issue (12 words) | Business Impact (12 words) |
-|----------|------|------|------------------|----------------------------|
-"""
-        
-        severity_order = {"Critical": 1, "High": 2, "Medium": 3, "Low": 4}
-        sorted_findings = sorted(findings, key=lambda x: severity_order.get(str(x.get("severity", "Low")), 4))
-        
-        for finding in sorted_findings[:25]:  # Show more findings since they're shorter now
-            severity = str(finding.get("severity", "Medium"))
-            filename = finding.get("filename", "N/A")
-            line = finding.get("line_number", "N/A")
-            
-            # Use the 12-word limited fields from JSON
-            issue = str(finding.get("finding", ""))  # Already limited to 12 words in JSON
-            business_impact_text = str(finding.get("business_impact", ""))  # Already limited to 12 words
+            # Limit business impact to 12 characters
+            business_impact_full = str(finding.get("business_impact", ""))
+            business_impact_text = business_impact_full[:12] + "..." if len(business_impact_full) > 12 else business_impact_full
             
             priority_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(severity, "🟡")
             
@@ -879,6 +883,11 @@ def format_executive_pr_display(json_response: dict, processed_files: list, has_
     return display_text
 
 def main():
+    # Check for special test mode to insert fake previous review
+    if len(sys.argv) > 5 and sys.argv[5] == "test_previous":
+        print("🧪 TEST MODE: Inserting fake previous review for testing...")
+        insert_test_previous_review()
+        
     if len(sys.argv) >= 5:
         output_folder_path = sys.argv[2]  # Keep output folder from args
         try:
