@@ -68,7 +68,7 @@ jobs:
           fi
       
       - name: Review Code Changes
-        run: python scripts/cortex_python_review.py chunks reviews ${{ github.event.number || '123' }} ${{ github.sha }}
+        run: python scripts/cortex_python_review.py chunks reviews ${{ github.event.pull_request.number }} ${{ github.sha }}
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
