@@ -64,7 +64,7 @@ PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level Python code revi
 1.  **You are reviewing a code file for executive-level analysis.** Focus on business impact, technical debt, security risks, and maintainability.
 2.  **Focus your review on the most critical aspects.** Prioritize findings that have business impact or security implications.
 3.  **Infer context from the full code.** Base your review on the complete file provided.
-4.  **Your entire response MUST be under 65,000 characters.** Prioritize findings with `High` or `Critical` severity. If the review is extensive, omit `Low` severity findings to meet the length constraint.
+4.  **Your entire response MUST be under 65,000 characters.** Include findings of all severities but prioritize Critical and High severity issues.
 
 # REVIEW PRIORITIES (Strict Order)
 1.  Security & Correctness
@@ -73,9 +73,21 @@ PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level Python code revi
 4.  Readability & Maintainability
 5.  Testability
 
+# SEVERITY GUIDELINES (Be Realistic and Balanced - MOST ISSUES SHOULD BE MEDIUM OR LOW)
+-   **Critical:** ONLY for security vulnerabilities, data loss risks, system crashes, production outages
+-   **High:** ONLY for significant error handling gaps, major performance bottlenecks, security concerns
+-   **Medium:** Code quality improvements, minor performance issues, maintainability concerns, documentation gaps
+-   **Low:** Style improvements, minor optimizations, non-critical suggestions, cosmetic issues
+
+# REALISTIC SEVERITY DISTRIBUTION (MANDATORY):
+- Critical: 0-5% of findings (very rare)
+- High: 10-20% of findings 
+- Medium: 40-50% of findings (most common)
+- Low: 30-40% of findings (common)
+
 # ELIGIBILITY CRITERIA FOR FINDINGS (ALL must be met)
 -   **Evidence:** Quote the exact code snippet and cite the line number.
--   **Severity:** Assign {Low | Medium | High | Critical}.
+-   **Severity:** Assign {Low | Medium | High | Critical} - BE REALISTIC, most issues should be Medium or Low.
 -   **Impact & Action:** Briefly explain the issue and provide a minimal, safe correction.
 -   **Non-trivial:** Skip purely stylistic nits (e.g., import order, line length) that a linter would catch.
 
@@ -85,11 +97,12 @@ PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level Python code revi
 -   NEVER suggest logging sensitive user data or internal paths. Suggest non-reversible fingerprints if context is needed.
 -   Do NOT recommend removing correct type hints or docstrings.
 -   If code in the file is already correct and idiomatic, do NOT invent problems.
+-   DO NOT inflate severity levels - be conservative and realistic.
 
 ---
 # OUTPUT FORMAT (Strict, professional, audit-ready)
 
-Your entire response MUST be under 65,000 characters. Prioritize findings with High or Critical severity. If the review is extensive, omit Low severity findings to meet the length constraint.
+Your entire response MUST be under 65,000 characters. Include findings of all severity levels with realistic severity assignments.
 
 ## Code Review Summary
 *A 2-3 sentence high-level summary. Mention the key strengths and the most critical areas for improvement.*
@@ -130,7 +143,7 @@ Follow these instructions to populate the JSON fields:
 5.  **`security_risk_level` (string):** Determine security risk as "LOW", "MEDIUM", "HIGH", or "CRITICAL".
 6.  **`maintainability_rating` (string):** Rate maintainability as "POOR", "FAIR", "GOOD", or "EXCELLENT".
 7.  **`detailed_findings` (array of objects):** Create an array of objects, where each object represents a single, distinct issue found in the code:
-         -   **`severity`**: Assess and assign severity: "Low", "Medium", "High", or "Critical".
+         -   **`severity`**: Assign severity realistically: "Low", "Medium", "High", or "Critical". MOST ISSUES SHOULD BE Medium or Low. Only use Critical for security vulnerabilities or data loss risks. Only use High for significant errors or performance issues.
          -   **`category`**: Assign category: "Security", "Performance", "Maintainability", "Best Practices", "Documentation", or "Error Handling".
          -   **`line_number`**: Extract the specific line number if mentioned in the review. If no line number is available, use "N/A".
          -   **`function_context`**: From the review text, identify the function or class name where the issue is located. If not applicable, use "global scope".
@@ -152,11 +165,13 @@ Follow these instructions to populate the JSON fields:
          -   **`status`**: "RESOLVED", "PARTIALLY_RESOLVED", "NOT_ADDRESSED", or "WORSENED"
          -   **`details`**: Explanation of current status
 
-**CRITICAL INSTRUCTION FOR LARGE REVIEWS:**
-Your entire response MUST be under {MAX_CHARS_FOR_FINAL_SUMMARY_FILE} characters. If the number of findings is very large, you MUST prioritize.
--   First, only include findings with **'Critical' and 'High' severity** in the `detailed_findings` array.
--   If there is still not enough space, summarize the 'Medium' severity findings in the main `executive_summary` field instead of listing them individually.
--   'Low' severity findings can be ignored if space is limited.
+**CRITICAL INSTRUCTION FOR BALANCED REVIEWS:**
+Your entire response MUST be under {MAX_CHARS_FOR_FINAL_SUMMARY_FILE} characters. Include findings of all severity levels with realistic severity assignments:
+-   Use "Critical" only for security vulnerabilities, data loss risks, or system crashes
+-   Use "High" only for significant error handling gaps or major performance issues  
+-   Use "Medium" for code quality improvements and minor performance issues
+-   Use "Low" for style improvements and non-critical suggestions
+-   REALISTIC DISTRIBUTION: Expect mostly Medium (40-50%) and Low (30-40%) severity findings, with fewer High (10-20%) and very few Critical (0-5%)
 
 Here are the individual code reviews to process:
 {ALL_REVIEWS_CONTENT}
@@ -437,12 +452,12 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
             status = issue.get("status", "UNKNOWN")
             status_emoji = {"RESOLVED": "✅", "PARTIALLY_RESOLVED": "⚠️", "NOT_ADDRESSED": "❌", "WORSENED": "🔴"}.get(status, "❓")
             
-            # LIMIT TO 12 CHARACTERS as requested - but keep original working format
+            # SHOW EXACTLY 12 CHARACTERS - pad with spaces to make column wider
             original = issue.get("original_issue", "")
-            original_12 = original[:12] + "..." if len(original) > 12 else original
+            original_12 = f"{original[:12]:<12}{'...' if len(original) > 12 else ''}"
             
             details = issue.get("details", "")
-            details_12 = details[:12] + "..." if len(details) > 12 else details
+            details_12 = f"{details[:12]:<12}{'...' if len(details) > 12 else ''}"
             
             display_text += f"| {original_12} | {status_emoji} {status} | {details_12} |\n"
         
@@ -464,12 +479,12 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
             filename = finding.get("filename", "N/A")
             line = finding.get("line_number", "N/A")
             
-            # BACK TO 12 CHARACTER LIMITS as you originally requested
+            # SHOW EXACTLY 12 CHARACTERS - pad with spaces to make column wider
             issue = str(finding.get("finding", ""))
-            issue_12 = issue[:12] + "..." if len(issue) > 12 else issue
+            issue_12 = f"{issue[:12]:<12}{'...' if len(issue) > 12 else ''}"
             
             business_impact_text = str(finding.get("business_impact", ""))
-            business_impact_12 = business_impact_text[:12] + "..." if len(business_impact_text) > 12 else business_impact_text
+            business_impact_12 = f"{business_impact_text[:12]:<12}{'...' if len(business_impact_text) > 12 else ''}"
             
             priority_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(severity, "🟡")
             
