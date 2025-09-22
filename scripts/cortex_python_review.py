@@ -258,7 +258,126 @@ def chunk_large_file(code_text: str, max_chunk_size: int = 50000) -> list:
     
     return chunks
 
-def format_executive_pr_display(json_response: dict, processed_files: list) -> str:
+def calculate_executive_quality_score(findings: list, total_lines_of_code: int) -> int:
+    """
+    Executive-level rule-based quality scoring (0-100).
+    MUCH MORE BALANCED - Fixed overly harsh scoring.
+    
+    Scoring Logic (REALISTIC):
+    - Start with base score of 100
+    - Reasonable deductions that won't hit zero easily
+    - Focus on actionable scoring for executives
+    """
+    if not findings or len(findings) == 0:
+        return 100
+    
+    base_score = 100
+    total_deductions = 0
+    
+    # MUCH MORE BALANCED severity weightings
+    severity_weights = {
+        "Critical": 8,     # Each critical issue deducts 8 points (was 15)
+        "High": 3,         # Each high issue deducts 3 points (was 6)
+        "Medium": 1.5,     # Each medium issue deducts 1.5 points (was 3)
+        "Low": 0.5         # Each low issue deducts 0.5 points (was 1)
+    }
+    
+    # Count issues by severity - STRICT PRECISION (NO CONVERSION)
+    severity_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+    total_affected_lines = 0
+    
+    print(f"  📊 Scoring {len(findings)} findings...")
+    
+    for finding in findings:
+        severity = str(finding.get("severity", "")).strip()  # Keep original case
+        
+        # STRICT MATCHING - NO CONVERSION TO MEDIUM
+        if severity == "Critical":
+            severity_counts["Critical"] += 1
+        elif severity == "High":
+            severity_counts["High"] += 1
+        elif severity == "Medium":
+            severity_counts["Medium"] += 1
+        elif severity == "Low":
+            severity_counts["Low"] += 1
+        else:
+            # LOG UNRECOGNIZED SEVERITY BUT DON'T COUNT IT
+            print(f"    ⚠️ UNRECOGNIZED SEVERITY: '{severity}' in finding: {finding.get('finding', 'Unknown')[:50]}... - SKIPPING")
+            continue  # Skip this finding entirely instead of converting
+            
+        print(f"    - {severity}: {finding.get('finding', 'No description')[:50]}...")
+        
+        # Count affected lines (treat N/A as 1 line)
+        line_num = finding.get("line_number", "N/A")
+        total_affected_lines += 1
+    
+    print(f"  📈 Severity breakdown: Critical={severity_counts['Critical']}, High={severity_counts['High']}, Medium={severity_counts['Medium']}, Low={severity_counts['Low']}")
+    
+    # Calculate REALISTIC deductions from severity
+    for severity, count in severity_counts.items():
+        if count > 0:
+            weight = severity_weights[severity]
+            
+            # MUCH MORE BALANCED progressive penalty
+            if severity == "Critical":
+                # Critical: 8, 12, 16, 20 for 1,2,3,4 issues (much more reasonable)
+                if count <= 3:
+                    deduction = weight * count
+                else:
+                    deduction = weight * 3 + (count - 3) * (weight + 2)
+                # Cap critical deductions at 25 points max (was 50)
+                deduction = min(25, deduction)
+            elif severity == "High":
+                # High: Linear scaling with small bonus after 8 issues
+                if count <= 8:
+                    deduction = weight * count
+                else:
+                    deduction = weight * 8 + (count - 8) * (weight + 1)
+                # Cap high severity deductions at 20 points max (was 40)
+                deduction = min(20, deduction)
+            else:
+                # Medium/Low: Pure linear scaling with caps
+                deduction = weight * count
+                # Much lower caps
+                if severity == "Medium":
+                    deduction = min(15, deduction)  # Was 20
+                else:
+                    deduction = min(8, deduction)   # Was 10
+                
+            total_deductions += deduction
+            print(f"    {severity}: {count} issues = -{deduction:.1f} points (capped)")
+    
+    # MUCH REDUCED penalties
+    if total_lines_of_code > 0:
+        affected_ratio = total_affected_lines / total_lines_of_code
+        if affected_ratio > 0.3:  # Only penalize if more than 30% affected (was 20%)
+            coverage_penalty = min(5, int(affected_ratio * 25))  # Max 5 point penalty (was 10)
+            total_deductions += coverage_penalty
+            print(f"    Coverage penalty: -{coverage_penalty} points ({affected_ratio:.1%} affected)")
+    
+    # MUCH REDUCED critical threshold penalties
+    if severity_counts["Critical"] >= 10:  # Raised threshold from 5 to 10
+        total_deductions += 8  # Reduced from 15 to 8
+        print(f"    Executive threshold penalty: -8 points (10+ critical issues)")
+    
+    if severity_counts["Critical"] + severity_counts["High"] >= 25:  # Raised from 15 to 25
+        total_deductions += 5  # Reduced from 10 to 5
+        print(f"    Production readiness penalty: -5 points (25+ critical/high issues)")
+    
+    # Calculate final score
+    final_score = max(0, base_score - int(total_deductions))
+    
+    print(f"  🎯 Final calculation: {base_score} - {int(total_deductions)} = {final_score}")
+    
+    # ADJUSTED executive score bands for more realistic scoring
+    if final_score >= 85:
+        return min(100, final_score)  # Excellent
+    elif final_score >= 70:  # Lowered from 65
+        return final_score  # Good
+    elif final_score >= 50:  # Lowered from 40
+        return final_score  # Fair - needs attention
+    else:
+        return max(25, final_score)  # Poor - but never below 25 for functional code
     summary = json_response.get("executive_summary", "Technical analysis completed")
     findings = json_response.get("detailed_findings", [])
     quality_score = json_response.get("quality_score", 75)
@@ -304,31 +423,26 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 
 """
 
-    # Add previous issues resolution status - WITH 12 CHARACTER LIMIT
+    # Add previous issues resolution status - EXACTLY as your original working version but with 12-char limit
     if previous_issues:
         display_text += """<details>
 <summary><strong>📈 Previous Issues Resolution Status</strong> (Click to expand)</summary>
 
-| Previous Issue | Status | Line | Details |
-|----------------|--------|------|---------|
+| Previous Issue | Status | Details |
+|----------------|--------|---------|
 """
         for issue in previous_issues:
             status = issue.get("status", "UNKNOWN")
             status_emoji = {"RESOLVED": "✅", "PARTIALLY_RESOLVED": "⚠️", "NOT_ADDRESSED": "❌", "WORSENED": "🔴"}.get(status, "❓")
             
-            # LIMIT TO 12 CHARACTERS as requested
-            original = issue.get("original_issue", "Unknown issue")
+            # LIMIT TO 12 CHARACTERS as requested - but keep original working format
+            original = issue.get("original_issue", "")
             original_12 = original[:12] + "..." if len(original) > 12 else original
             
-            # LIMIT DETAILS TO 12 CHARACTERS as requested
-            details = issue.get("details", "No details")
+            details = issue.get("details", "")
             details_12 = details[:12] + "..." if len(details) > 12 else details
             
-            # EXTRACT LINE NUMBER from details if available
-            line_match = re.search(r'line\s*(\d+)', details.lower())
-            line_number = line_match.group(1) if line_match else "N/A"
-            
-            display_text += f"| {original_12} | {status_emoji} {status} | {line_number} | {details_12} |\n"
+            display_text += f"| {original_12} | {status_emoji} {status} | {details_12} |\n"
         
         display_text += "\n</details>\n\n"
 
@@ -347,12 +461,17 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
             severity = str(finding.get("severity", "Medium"))
             filename = finding.get("filename", "N/A")
             line = finding.get("line_number", "N/A")
-            issue = str(finding.get("finding", ""))[:100] + ("..." if len(str(finding.get("finding", ""))) > 100 else "")
-            business_impact_text = str(finding.get("business_impact", ""))[:80] + ("..." if len(str(finding.get("business_impact", ""))) > 80 else "")
+            
+            # BACK TO 12 CHARACTER LIMITS as you originally requested
+            issue = str(finding.get("finding", ""))
+            issue_12 = issue[:12] + "..." if len(issue) > 12 else issue
+            
+            business_impact_text = str(finding.get("business_impact", ""))
+            business_impact_12 = business_impact_text[:12] + "..." if len(business_impact_text) > 12 else business_impact_text
             
             priority_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(severity, "🟡")
             
-            display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue} | {business_impact_text} |\n"
+            display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue_12} | {business_impact_12} |\n"
         
         display_text += "\n</details>\n\n"
 
@@ -533,6 +652,16 @@ def main():
         try:
             consolidated_json = json.loads(consolidated_raw)
             print("  ✅ Successfully parsed consolidated JSON response")
+            
+            # OVERRIDE: Calculate rule-based quality score (don't trust LLM for this)
+            findings = consolidated_json.get("detailed_findings", [])
+            total_lines = sum(len(review.get("review_feedback", "").split('\n')) for review in all_individual_reviews)
+            
+            rule_based_score = calculate_executive_quality_score(findings, total_lines)
+            consolidated_json["quality_score"] = rule_based_score
+            
+            print(f"  🎯 Rule-based quality score calculated: {rule_based_score}/100 (overriding LLM score)")
+            
         except json.JSONDecodeError as e:
             print(f"  ⚠️ JSON parsing failed: {e}")
             json_match = re.search(r'\{.*\}', consolidated_raw, re.DOTALL)
