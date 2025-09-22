@@ -378,6 +378,8 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
         return final_score  # Fair - needs attention
     else:
         return max(25, final_score)  # Poor - but never below 25 for functional code
+
+def format_executive_pr_display(json_response: dict, processed_files: list) -> str:
     summary = json_response.get("executive_summary", "Technical analysis completed")
     findings = json_response.get("detailed_findings", [])
     quality_score = json_response.get("quality_score", 75)
