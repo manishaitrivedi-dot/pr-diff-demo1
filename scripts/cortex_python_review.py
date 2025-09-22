@@ -1,4 +1,4 @@
-import os, sys, json, re, uuid
+import os, sys, json, re, uuid, glob
 from pathlib import Path
 from snowflake.snowpark import Session
 import pandas as pd
@@ -794,6 +794,44 @@ def main():
         print(f"❌ Consolidation error: {e}")
         import traceback
         traceback.print_exc()
+        
+        # FALLBACK: Create basic review_output.json even if consolidation fails
+        fallback_summary = f"""# 📊 Code Review Report (Fallback Mode)
+
+**Files Analyzed:** {len(processed_files)} files | **Analysis Date:** {datetime.now().strftime('%Y-%m-%d')}
+
+## ⚠️ Review Status
+Technical analysis completed with {len(all_individual_reviews)} individual file reviews.
+Executive consolidation encountered an error but individual reviews are available.
+
+**Files Processed:**
+"""
+        for i, file in enumerate(processed_files, 1):
+            fallback_summary += f"{i}. {file}\n"
+
+        fallback_summary += "\n*Individual file reviews available in output folder.*"
+
+        # Create fallback review_output.json
+        fallback_data = {
+            "full_review": fallback_summary,
+            "full_review_markdown": fallback_summary,
+            "full_review_json": {
+                "executive_summary": "Review completed with errors during consolidation",
+                "quality_score": 50,
+                "business_impact": "MEDIUM",
+                "detailed_findings": [],
+                "strategic_recommendations": ["Review individual file reports for detailed findings"],
+                "immediate_actions": ["Check consolidation errors in logs"]
+            },
+            "criticals": [],
+            "file": processed_files[0] if processed_files else "unknown",
+            "timestamp": datetime.now().isoformat(),
+            "status": "fallback_mode"
+        }
+
+        with open("review_output.json", "w", encoding='utf-8') as f:
+            json.dump(fallback_data, f, indent=2, ensure_ascii=False)
+        print("  ⚠️ Fallback review_output.json created for inline_comment.py compatibility")
 
 if __name__ == "__main__":
     try:
