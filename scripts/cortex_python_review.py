@@ -237,7 +237,6 @@ def chunk_large_file(code_text: str, max_chunk_size: int = 50000) -> list:
     return chunks
 
 def calculate_executive_quality_score(findings: list, total_lines_of_code: int) -> int:
-def calculate_executive_quality_score(findings: list, total_lines_of_code: int) -> int:
     """
     Executive-level rule-based quality scoring (0-100).
     Does not rely on LLM - uses deterministic business logic.
