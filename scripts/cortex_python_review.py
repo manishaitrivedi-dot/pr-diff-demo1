@@ -440,7 +440,7 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 
 """
 
-    # FIXED: Previous issues resolution status with 12 words limit
+    # NO TRUNCATION - show full text for previous issues
     if previous_issues:
         display_text += """<details>
 <summary><strong>📈 Previous Issues Resolution Status</strong> (Click to expand)</summary>
@@ -452,14 +452,9 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
             status = issue.get("status", "UNKNOWN")
             status_emoji = {"RESOLVED": "✅", "PARTIALLY_RESOLVED": "⚠️", "NOT_ADDRESSED": "❌", "WORSENED": "🔴"}.get(status, "❓")
             
-            # LIMIT to first 12 words for readability
-            original = issue.get("original_issue", "")
-            original_words = original.split()[:12]  # First 12 words
-            original_display = " ".join(original_words) + ("..." if len(original.split()) > 12 else "")
-            
-            details = issue.get("details", "")
-            details_words = details.split()[:12]  # First 12 words
-            details_display = " ".join(details_words) + ("..." if len(details.split()) > 12 else "")
+            # NO TRUNCATION - show full text
+            original_display = issue.get("original_issue", "")
+            details_display = issue.get("details", "")
             
             display_text += f"| {original_display} | {status_emoji} {status} | {details_display} |\n"
         
@@ -481,14 +476,9 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
             filename = finding.get("filename", "N/A")
             line = finding.get("line_number", "N/A")
             
-            # LIMIT to first 12 words for readability
-            issue = str(finding.get("finding", ""))
-            issue_words = issue.split()[:12]  # First 12 words
-            issue_display = " ".join(issue_words) + ("..." if len(issue.split()) > 12 else "")
-            
-            business_impact_text = str(finding.get("business_impact", ""))
-            business_impact_words = business_impact_text.split()[:12]  # First 12 words
-            business_impact_display = " ".join(business_impact_words) + ("..." if len(business_impact_text.split()) > 12 else "")
+            # NO TRUNCATION - show full text
+            issue_display = str(finding.get("finding", ""))
+            business_impact_display = str(finding.get("business_impact", ""))
             
             priority_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(severity, "🟡")
             
