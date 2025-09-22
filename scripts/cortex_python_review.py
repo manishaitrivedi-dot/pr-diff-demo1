@@ -441,8 +441,7 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 
 def main():
     if len(sys.argv) >= 5:
-        folder_path = sys.argv[1]
-        output_folder_path = sys.argv[2]
+        output_folder_path = sys.argv[2]  # Keep output folder from args
         try:
             pull_request_number = int(sys.argv[3]) if sys.argv[3] and sys.argv[3].strip() else None
         except (ValueError, IndexError):
@@ -451,11 +450,14 @@ def main():
         commit_sha = sys.argv[4]
         directory_mode = True
         
-        # Dynamically get all Python files in the directory
-        python_files = get_changed_python_files(folder_path)
+        # ALWAYS use scripts directory regardless of first argument
+        print(f"📁 Command line mode: Using {SCRIPTS_DIRECTORY} directory instead of '{sys.argv[1]}'")
+        python_files = get_changed_python_files(SCRIPTS_DIRECTORY)
         if not python_files:
-            print("❌ No Python files found in the specified directory")
+            print(f"❌ No Python files found in {SCRIPTS_DIRECTORY} directory using pattern {FILE_PATTERN}")
             return
+            
+        folder_path = SCRIPTS_DIRECTORY  # Always use scripts directory
             
     else:
         # Fallback for single file mode - use scripts directory with wildcard pattern
