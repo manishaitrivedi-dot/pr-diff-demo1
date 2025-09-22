@@ -159,8 +159,6 @@ def get_changed_python_files(folder_path=None):
     Dynamically get all Python files from the specified folder or scripts directory.
     Uses wildcard pattern matching for flexibility.
     """
-    import glob
-    
     # If no folder specified, use the scripts directory
     if not folder_path:
         folder_path = SCRIPTS_DIRECTORY
@@ -347,7 +345,7 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
         return final_score  # Fair - needs attention
     else:
         return max(0, final_score)  # Poor - immediate action required
-    
+
 def compare_with_previous_issues(current_findings: list, previous_issues: list) -> list:
     """
     Compare current findings with previous issues to determine status.
@@ -400,6 +398,8 @@ def compare_with_previous_issues(current_findings: list, previous_issues: list) 
                 finding["resolution_status"] = "New"
     
     return current_findings
+
+def format_executive_pr_display(json_response: dict, processed_files: list, previous_issues: list = None) -> str:
     summary = json_response.get("executive_summary", "Technical analysis completed")
     findings = json_response.get("detailed_findings", [])
     
@@ -420,7 +420,7 @@ def compare_with_previous_issues(current_findings: list, previous_issues: list) 
     metrics = json_response.get("metrics", {})
     strategic_recs = json_response.get("strategic_recommendations", [])
     immediate_actions = json_response.get("immediate_actions", [])
-    previous_issues = json_response.get("previous_issues_resolved", [])
+    previous_issues_resolved = json_response.get("previous_issues_resolved", [])
     
     critical_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "CRITICAL")
     high_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "HIGH")
