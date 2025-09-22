@@ -1,4 +1,4 @@
-import os, sys, json, re, uuid
+import os, sys, json, re, uuid, glob
 from pathlib import Path
 from snowflake.snowpark import Session
 import pandas as pd
@@ -10,7 +10,10 @@ from datetime import datetime
 MODEL = "openai-gpt-4.1"
 MAX_CHARS_FOR_FINAL_SUMMARY_FILE = 65000
 MAX_TOKENS_FOR_SUMMARY_INPUT = 100000
-FILE_TO_REVIEW = "scripts/simple_test.py"
+
+# Dynamic file pattern - processes all Python files in scripts directory
+SCRIPTS_DIRECTORY = "scripts"  # Base directory to scan
+FILE_PATTERN = "*.py"  # Pattern to match Python files
 
 # ---------------------
 # Snowflake session
@@ -19,12 +22,36 @@ cfg = {
     "account": "XKB93357.us-west-2",
     "user": "MANISHAT007", 
     "password": "Welcome@987654321",
-    "role": "SYSADMIN",  # CHANGED: from ORGADMIN to SYSADMIN
+    "role": "SYSADMIN",  # ONLY CHANGE: from ORGADMIN to SYSADMIN
     "warehouse": "COMPUTE_WH",
     "database": "MY_DB",
     "schema": "PUBLIC",
 }
 session = Session.builder.configs(cfg).create()
+
+# FIX DATABASE PERMISSIONS: Try different approaches
+database_available = False
+try:
+    session.sql("USE ROLE SYSADMIN").collect()
+    session.sql("USE DATABASE MY_DB").collect()
+    session.sql("USE SCHEMA PUBLIC").collect()
+    print("✅ Database context set: MY_DB.PUBLIC with SYSADMIN")
+    database_available = True
+except Exception as e:
+    print(f"⚠️ Warning: SYSADMIN failed: {e}")
+    # Try creating our own schema with full permissions
+    try:
+        session.sql("USE ROLE SYSADMIN").collect()
+        session.sql("CREATE DATABASE IF NOT EXISTS REVIEW_DB").collect()
+        session.sql("USE DATABASE REVIEW_DB").collect()
+        session.sql("CREATE SCHEMA IF NOT EXISTS REVIEWS").collect()
+        session.sql("USE SCHEMA REVIEWS").collect()
+        print("✅ Created and using REVIEW_DB.REVIEWS")
+        database_available = True
+    except Exception as e2:
+        print(f"⚠️ Warning: Schema creation failed: {e2}")
+        print("⚠️ Continuing without database logging - previous reviews won't work")
+        database_available = False
 
 # ---------------------
 # PROMPT TEMPLATES
@@ -150,6 +177,36 @@ CRITICAL INSTRUCTION: You must analyze the new code changes with full awareness 
 
 {consolidated_template}
 """
+
+def get_changed_python_files(folder_path=None):
+    """
+    Dynamically get all Python files from the specified folder or scripts directory.
+    Uses wildcard pattern matching for flexibility.
+    """
+    # If no folder specified, use the scripts directory
+    if not folder_path:
+        folder_path = SCRIPTS_DIRECTORY
+        
+    if not os.path.exists(folder_path):
+        print(f"❌ Directory {folder_path} not found")
+        return []
+    
+    # Use glob pattern to find all Python files
+    pattern = os.path.join(folder_path, FILE_PATTERN)
+    py_files = glob.glob(pattern)
+    
+    # Also check subdirectories recursively
+    recursive_pattern = os.path.join(folder_path, "**", FILE_PATTERN)
+    py_files.extend(glob.glob(recursive_pattern, recursive=True))
+    
+    # Remove duplicates and sort
+    py_files = sorted(list(set(py_files)))
+    
+    print(f"📁 Found {len(py_files)} Python files in {folder_path} using pattern '{FILE_PATTERN}':")
+    for file in py_files:
+        print(f"  - {file}")
+    
+    return py_files
 
 def build_prompt_for_individual_review(code_text: str, filename: str = "code_file") -> str:
     prompt = PROMPT_TEMPLATE_INDIVIDUAL.replace("{PY_CONTENT}", code_text)
@@ -327,8 +384,7 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 
 def main():
     if len(sys.argv) >= 5:
-        folder_path = sys.argv[1]
-        output_folder_path = sys.argv[2]
+        output_folder_path = sys.argv[2]  # Keep output folder from args
         try:
             pull_request_number = int(sys.argv[3]) if sys.argv[3] and sys.argv[3].strip() else None
         except (ValueError, IndexError):
@@ -336,13 +392,29 @@ def main():
             pull_request_number = None
         commit_sha = sys.argv[4]
         directory_mode = True
+        
+        # ALWAYS use scripts directory regardless of first argument
+        print(f"📁 Command line mode: Using {SCRIPTS_DIRECTORY} directory instead of '{sys.argv[1]}'")
+        python_files = get_changed_python_files(SCRIPTS_DIRECTORY)
+        if not python_files:
+            print(f"❌ No Python files found in {SCRIPTS_DIRECTORY} directory using pattern {FILE_PATTERN}")
+            return
+            
+        folder_path = SCRIPTS_DIRECTORY  # Always use scripts directory
+            
     else:
-        folder_path = None
+        # Fallback for single file mode - use scripts directory with wildcard pattern
+        python_files = get_changed_python_files(SCRIPTS_DIRECTORY)
+        if not python_files:
+            print(f"❌ No Python files found in {SCRIPTS_DIRECTORY} directory using pattern {FILE_PATTERN}")
+            return
+            
+        folder_path = SCRIPTS_DIRECTORY
         output_folder_path = "output_reviews"
         pull_request_number = 0
         commit_sha = "test"
         directory_mode = False
-        print(f"Running in single-file mode with: {FILE_TO_REVIEW}")
+        print(f"Running in dynamic pattern mode with {len(python_files)} Python files from {SCRIPTS_DIRECTORY}")
 
     if os.path.exists(output_folder_path):
         import shutil
@@ -355,22 +427,8 @@ def main():
     print("\n🔍 STAGE 1: Individual File Analysis...")
     print("=" * 60)
     
-    if directory_mode:
-        files_to_process = [f for f in os.listdir(folder_path) if f.endswith((".py", ".sql"))]
-    else:
-        if not os.path.exists(FILE_TO_REVIEW):
-            print(f"❌ File {FILE_TO_REVIEW} not found")
-            return
-        files_to_process = [FILE_TO_REVIEW]
-        folder_path = os.path.dirname(FILE_TO_REVIEW)
-
-    for filename in files_to_process:
-        if directory_mode:
-            file_path = os.path.join(folder_path, filename)
-        else:
-            file_path = filename
-            filename = os.path.basename(filename)
-            
+    for file_path in python_files:
+        filename = os.path.basename(file_path)
         print(f"\n--- Reviewing file: {filename} ---")
         processed_files.append(filename)
 
@@ -427,7 +485,7 @@ def main():
     try:
         # CRITICAL: Retrieve previous review context BEFORE generating new review
         previous_review_context = None
-        if pull_request_number and pull_request_number != 0:
+        if pull_request_number and pull_request_number != 0 and database_available:
             try:
                 create_table_query = """
                 CREATE TABLE IF NOT EXISTS CODE_REVIEW_LOG (
@@ -457,6 +515,8 @@ def main():
                     
             except Exception as e:
                 print(f"  Warning: Could not retrieve previous review: {e}")
+        elif not database_available:
+            print("  ⚠️ Database not available - cannot retrieve previous reviews")
 
         combined_reviews_json = json.dumps(all_individual_reviews, indent=2)
         print(f"  Combined reviews: {len(combined_reviews_json)} characters")
@@ -526,7 +586,7 @@ def main():
         print("  ✅ review_output.json saved for inline_comment.py compatibility")
 
         # Store current review for future comparisons - FIXED SQL
-        if pull_request_number and pull_request_number != 0:
+        if pull_request_number and pull_request_number != 0 and database_available:
             try:
                 insert_sql = """
                     INSERT INTO CODE_REVIEW_LOG (PULL_REQUEST_NUMBER, COMMIT_SHA, REVIEW_SUMMARY, DETAILED_FINDINGS)
