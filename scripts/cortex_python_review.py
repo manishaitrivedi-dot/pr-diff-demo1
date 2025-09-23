@@ -475,9 +475,14 @@ def setup_review_log_table():
         return False
         
     try:
+        # FIXED: Drop existing table if it has wrong structure, then recreate
+        print(f"  🔧 Dropping existing table if it exists...")
+        drop_table_query = f"DROP TABLE IF EXISTS {current_database}.{current_schema}.CODE_REVIEW_LOG"
+        session.sql(drop_table_query).collect()
+        
         # FIXED: Use VARIANT columns and simpler structure like the working code
         create_table_query = f"""
-        CREATE TABLE IF NOT EXISTS {current_database}.{current_schema}.CODE_REVIEW_LOG (
+        CREATE TABLE {current_database}.{current_schema}.CODE_REVIEW_LOG (
             REVIEW_ID INTEGER AUTOINCREMENT START 1 INCREMENT 1,
             PULL_REQUEST_NUMBER INTEGER,
             COMMIT_SHA VARCHAR(40),
@@ -487,7 +492,7 @@ def setup_review_log_table():
         );
         """
         session.sql(create_table_query).collect()
-        print(f"✅ Review log table created/verified in {current_database}.{current_schema}")
+        print(f"✅ Review log table created with correct structure in {current_database}.{current_schema}")
         return True
     except Exception as e:
         print(f"❌ Failed to create review log table: {e}")
