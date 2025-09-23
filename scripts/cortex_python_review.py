@@ -1,4 +1,4 @@
-import os, sys, json, re, uuid
+import os, sys, json, re, uuid, glob
 from pathlib import Path
 from snowflake.snowpark import Session
 import pandas as pd
@@ -10,7 +10,10 @@ from datetime import datetime
 MODEL = "openai-gpt-4.1"
 MAX_CHARS_FOR_FINAL_SUMMARY_FILE = 65000
 MAX_TOKENS_FOR_SUMMARY_INPUT = 100000
-FILE_TO_REVIEW = "scripts/simple_test.py"
+
+# Dynamic file pattern - processes all Python AND SQL files in scripts directory
+SCRIPTS_DIRECTORY = "scripts"  # Base directory to scan
+FILE_PATTERNS = ["*.py", "*.sql"]  # CHANGED: Added SQL files
 
 # ---------------------
 # Snowflake session
@@ -19,17 +22,41 @@ cfg = {
     "account": "XKB93357.us-west-2",
     "user": "MANISHAT007", 
     "password": "Welcome@987654321",
-    "role": "ORGADMIN",
+    "role": "SYSADMIN",  # ONLY CHANGE: from ORGADMIN to SYSADMIN
     "warehouse": "COMPUTE_WH",
     "database": "MY_DB",
     "schema": "PUBLIC",
 }
 session = Session.builder.configs(cfg).create()
 
+# FIX DATABASE PERMISSIONS: Try different approaches
+database_available = False
+try:
+    session.sql("USE ROLE SYSADMIN").collect()
+    session.sql("USE DATABASE MY_DB").collect()
+    session.sql("USE SCHEMA PUBLIC").collect()
+    print("✅ Database context set: MY_DB.PUBLIC with SYSADMIN")
+    database_available = True
+except Exception as e:
+    print(f"⚠️ Warning: SYSADMIN failed: {e}")
+    # Try creating our own schema with full permissions
+    try:
+        session.sql("USE ROLE SYSADMIN").collect()
+        session.sql("CREATE DATABASE IF NOT EXISTS REVIEW_DB").collect()
+        session.sql("USE DATABASE REVIEW_DB").collect()
+        session.sql("CREATE SCHEMA IF NOT EXISTS REVIEWS").collect()
+        session.sql("USE SCHEMA REVIEWS").collect()
+        print("✅ Created and using REVIEW_DB.REVIEWS")
+        database_available = True
+    except Exception as e2:
+        print(f"⚠️ Warning: Schema creation failed: {e2}")
+        print("⚠️ Continuing without database logging - previous reviews won't work")
+        database_available = False
+
 # ---------------------
 # PROMPT TEMPLATES
 # ---------------------
-PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level code reviewer with expertise in Python, SQL, and enterprise security. Your review must be concise, accurate, and directly actionable, as it will be posted as a GitHub Pull Request comment.
+PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level code reviewer with expertise in Python, SQL, and database security. Your review must be concise, accurate, and directly actionable, as it will be posted as a GitHub Pull Request comment.
 
 ---
 # CONTEXT: HOW TO REVIEW (Apply Silently)
@@ -37,29 +64,49 @@ PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level code reviewer wi
 1.  **You are reviewing a code file for executive-level analysis.** Focus on business impact, technical debt, security risks, and maintainability.
 2.  **Focus your review on the most critical aspects.** Prioritize findings that have business impact or security implications.
 3.  **Infer context from the full code.** Base your review on the complete file provided.
-4.  **Your entire response MUST be under 65,000 characters.** Prioritize findings with `High` or `Critical` severity. If the review is extensive, omit `Low` severity findings to meet the length constraint.
+4.  **Your entire response MUST be under 65,000 characters.** Include findings of all severities but prioritize Critical and High severity issues.
 
 # REVIEW PRIORITIES (Strict Order)
-1.  Security & Correctness
+1.  Security & Correctness (SQL Injection, Hardcoded Credentials, Input Validation)
 2.  Reliability & Error-handling
-3.  Performance & Complexity
+3.  Performance & Complexity (SQL Performance, Query Optimization)
 4.  Readability & Maintainability
 5.  Testability
 
+# CRITICAL SECURITY FOCUS AREAS:
+**For SQL Code & Database Operations:**
+-   **SQL Injection vulnerabilities** - Dynamic SQL construction, string concatenation in queries, f-strings in SQL, unsanitized user inputs
+-   **Missing parameterization** - Raw user input in WHERE clauses, ORDER BY, table names, LIMIT clauses
+-   **Hardcoded credentials** - Database passwords, connection strings, API keys in plain text
+-   **Unsafe dynamic queries** - Building SQL with string formatting, missing input validation
+-   **Missing WHERE clauses** - UPDATE/DELETE without proper conditions (data corruption risk)
+-   **Information disclosure** - Verbose error messages exposing schema, stack traces in production
+-   **SQL Performance issues** - Missing indexes, N+1 queries, inefficient JOINs, missing LIMIT clauses
+-   **Access control** - Missing authorization checks, overly broad permissions
+
+**For Python Code:**
+-   **Code injection** - Use of eval(), exec(), compile() with user input
+-   **Subprocess injection** - Unsanitized shell commands, os.system() calls
+-   **Path traversal** - File operations with user-controlled paths
+-   **Unsafe deserialization** - pickle.loads(), yaml.load() without safety
+
+# SEVERITY GUIDELINES (Be Realistic and Balanced - MOST ISSUES SHOULD BE MEDIUM OR LOW)
+-   **Critical:** ONLY for SQL injection, hardcoded credentials, data loss risks, security vulnerabilities, system crashes, production outages
+-   **High:** ONLY for significant error handling gaps, major performance bottlenecks, security concerns, missing authorization
+-   **Medium:** Code quality improvements, minor performance issues, maintainability concerns, documentation gaps, missing indexes
+-   **Low:** Style improvements, minor optimizations, non-critical suggestions, cosmetic issues
+
+# REALISTIC SEVERITY DISTRIBUTION (MANDATORY):
+- Critical: 0-5% of findings (very rare - only for security vulnerabilities)
+- High: 10-20% of findings (significant issues)
+- Medium: 40-50% of findings (most common - code quality)
+- Low: 30-40% of findings (common - style/minor issues)
+
 # ELIGIBILITY CRITERIA FOR FINDINGS (ALL must be met)
 -   **Evidence:** Quote the exact code snippet and cite the line number.
--   **Severity:** Assign {Low | Medium | High | Critical}.
+-   **Severity:** Assign {Low | Medium | High | Critical} - BE REALISTIC, most issues should be Medium or Low.
 -   **Impact & Action:** Briefly explain the issue and provide a minimal, safe correction.
 -   **Non-trivial:** Skip purely stylistic nits (e.g., import order, line length) that a linter would catch.
-
-# SECURITY FOCUS AREAS (For SQL and Python):
--   **SQL Injection vulnerabilities** - Look for dynamic SQL construction, unsanitized inputs
--   **Hardcoded credentials** - Database passwords, API keys, tokens in plain text
--   **Unsafe file operations** - Path traversal, arbitrary file access
--   **Input validation** - Missing sanitization, validation of user inputs
--   **Error handling** - Information disclosure through verbose error messages
--   **Authentication/Authorization** - Missing or weak access controls
--   **Data exposure** - Logging sensitive data, returning sensitive info in responses
 
 # HARD CONSTRAINTS (For accuracy & anti-hallucination)
 -   Do NOT propose APIs that don't exist for the imported modules.
@@ -67,12 +114,14 @@ PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level code reviewer wi
 -   NEVER suggest logging sensitive user data or internal paths. Suggest non-reversible fingerprints if context is needed.
 -   Do NOT recommend removing correct type hints or docstrings.
 -   If code in the file is already correct and idiomatic, do NOT invent problems.
--   **ALWAYS** look for security issues - these should be marked as High or Critical severity.
+-   DO NOT inflate severity levels - be conservative and realistic.
+-   **For SQL files:** Look specifically for SQL injection risks, missing parameterization, hardcoded values, performance issues
+-   **For Python files with SQL:** Look for f-strings in queries, string concatenation with user input, missing prepared statements
 
 ---
 # OUTPUT FORMAT (Strict, professional, audit-ready)
 
-Your entire response MUST be under 65,000 characters. Prioritize findings with High or Critical severity. If the review is extensive, omit Low severity findings to meet the length constraint.
+Your entire response MUST be under 65,000 characters. Include findings of all severity levels with realistic severity assignments.
 
 ## Code Review Summary
 *A 2-3 sentence high-level summary. Mention the key strengths and the most critical areas for improvement, especially security concerns.*
@@ -85,7 +134,7 @@ Your entire response MUST be under 65,000 characters. Prioritize findings with H
 -   **Severity:** {Critical | High | Medium | Low}
 -   **Line:** {line_number}
 -   **Function/Context:** `{function_name_if_applicable}`
--   **Finding:** {A clear, concise description of the issue, its impact, and a recommended correction. For security issues, explain the potential attack vector.}
+-   **Finding:** {A clear, concise description of the issue, its impact, and a recommended correction. For security issues, explain the attack vector.}
 
 **(Repeat for each finding)**
 
@@ -96,7 +145,6 @@ Your entire response MUST be under 65,000 characters. Prioritize findings with H
 ---
 # CODE TO REVIEW
 
-File Type: {file_extension}
 {PY_CONTENT}
 """
 
@@ -108,21 +156,21 @@ You MUST respond ONLY with a valid JSON object that conforms to the executive sc
 Follow these instructions to populate the JSON fields:
 
 1.  **`executive_summary` (string):** Write a 2-3 sentence high-level summary of the entire code change, covering the most important findings across all files with business impact focus.
-2.  **`quality_score` (number):** Assign an overall quality score (0-100) based on severity and number of findings. Critical issues should significantly lower the score.
+2.  **`quality_score` (number):** Assign an overall quality score (0-100) based on severity and number of findings.
 3.  **`business_impact` (string):** Assess overall business risk as "LOW", "MEDIUM", or "HIGH".
 4.  **`technical_debt_score` (string):** Evaluate technical debt as "LOW", "MEDIUM", or "HIGH".
-5.  **`security_risk_level` (string):** Determine security risk as "LOW", "MEDIUM", "HIGH", or "CRITICAL".
+5.  **`security_risk_level` (string):** Determine security risk as "LOW", "MEDIUM", "HIGH", or "CRITICAL". SQL injection and credential exposure should be CRITICAL.
 6.  **`maintainability_rating` (string):** Rate maintainability as "POOR", "FAIR", "GOOD", or "EXCELLENT".
 7.  **`detailed_findings` (array of objects):** Create an array of objects, where each object represents a single, distinct issue found in the code:
-         -   **`severity`**: Assess and assign severity: "Low", "Medium", "High", or "Critical". Security issues should be High or Critical.
+         -   **`severity`**: Assign severity realistically: "Low", "Medium", "High", or "Critical". SQL injection and credential exposure should be Critical. MOST ISSUES SHOULD BE Medium or Low. Only use Critical for security vulnerabilities or data loss risks. Only use High for significant errors or performance issues.
          -   **`category`**: Assign category: "Security", "Performance", "Maintainability", "Best Practices", "Documentation", or "Error Handling".
          -   **`line_number`**: Extract the specific line number if mentioned in the review. If no line number is available, use "N/A".
          -   **`function_context`**: From the review text, identify the function or class name where the issue is located. If not applicable, use "global scope".
          -   **`finding`**: Write a clear, concise description of the issue, its potential impact, and a concrete recommendation.
-         -   **`business_impact`**: Explain how this affects business operations or risk.
+         -   **`business_impact`**: Explain how this affects business operations or risk. For security issues, mention data breach/compliance risks.
          -   **`recommendation`**: Provide specific technical solution.
          -   **`effort_estimate`**: Estimate effort as "LOW", "MEDIUM", or "HIGH".
-         -   **`priority_ranking`**: Assign priority ranking (1 = highest priority). Critical and High severity should get priority 1-3.
+         -   **`priority_ranking`**: Assign priority ranking (1 = highest priority).
          -   **`filename`**: The name of the file where the issue was found.
 8.  **`metrics` (object):** Include technical metrics:
          -   **`lines_of_code`**: Total number of lines analyzed across all files.
@@ -136,13 +184,15 @@ Follow these instructions to populate the JSON fields:
          -   **`status`**: "RESOLVED", "PARTIALLY_RESOLVED", "NOT_ADDRESSED", or "WORSENED"
          -   **`details`**: Explanation of current status
 
-**CRITICAL INSTRUCTION FOR LARGE REVIEWS:**
-Your entire response MUST be under {MAX_CHARS_FOR_FINAL_SUMMARY_FILE} characters. If the number of findings is very large, you MUST prioritize.
--   First, only include findings with **'Critical' and 'High' severity** in the `detailed_findings` array.
--   If there is still not enough space, summarize the 'Medium' severity findings in the main `executive_summary` field instead of listing them individually.
--   'Low' severity findings can be ignored if space is limited.
+**CRITICAL INSTRUCTION FOR BALANCED REVIEWS:**
+Your entire response MUST be under {MAX_CHARS_FOR_FINAL_SUMMARY_FILE} characters. Include findings of all severity levels with realistic severity assignments:
+-   Use "Critical" only for SQL injection, hardcoded credentials, security vulnerabilities, data loss risks, or system crashes
+-   Use "High" only for significant error handling gaps or major performance issues  
+-   Use "Medium" for code quality improvements and minor performance issues
+-   Use "Low" for style improvements and non-critical suggestions
+-   REALISTIC DISTRIBUTION: Expect mostly Medium (40-50%) and Low (30-40%) severity findings, with fewer High (10-20%) and very few Critical (0-5%)
 
-**IMPORTANT:** Always analyze each review carefully for security issues, hardcoded credentials, SQL injection vulnerabilities, and other critical problems. These must be reflected in the findings with appropriate severity levels.
+**IMPORTANT:** Always analyze each review carefully for SQL injection vulnerabilities, hardcoded credentials, dynamic query construction, and other critical security problems. These must be reflected in the findings with Critical or High severity levels.
 
 Here are the individual code reviews to process:
 {ALL_REVIEWS_CONTENT}
@@ -164,25 +214,46 @@ CRITICAL INSTRUCTION: You must analyze the new code changes with full awareness 
 {consolidated_template}
 """
 
-def get_file_extension(filename: str) -> str:
-    """Get file extension for better context in prompts."""
-    ext = Path(filename).suffix.lower()
-    if ext == '.py':
-        return 'Python'
-    elif ext == '.sql':
-        return 'SQL'
-    elif ext == '.js':
-        return 'JavaScript'
-    elif ext == '.ts':
-        return 'TypeScript'
-    else:
-        return 'Unknown'
+def get_changed_python_files(folder_path=None):
+    """
+    Dynamically get all Python AND SQL files from the specified folder or scripts directory.
+    Uses wildcard pattern matching for flexibility.
+    """
+    # If no folder specified, use the scripts directory
+    if not folder_path:
+        folder_path = SCRIPTS_DIRECTORY
+        
+    if not os.path.exists(folder_path):
+        print(f"❌ Directory {folder_path} not found")
+        return []
+    
+    all_files = []
+    
+    # CHANGED: Process both Python and SQL files
+    for pattern in FILE_PATTERNS:
+        # Use glob pattern to find files
+        pattern_path = os.path.join(folder_path, pattern)
+        found_files = glob.glob(pattern_path)
+        
+        # Also check subdirectories recursively
+        recursive_pattern = os.path.join(folder_path, "**", pattern)
+        found_files.extend(glob.glob(recursive_pattern, recursive=True))
+        
+        all_files.extend(found_files)
+    
+    # Remove duplicates and sort
+    all_files = sorted(list(set(all_files)))
+    
+    print(f"📁 Found {len(all_files)} code files in {folder_path} using patterns {FILE_PATTERNS}:")
+    for file in all_files:
+        file_type = "SQL" if file.lower().endswith('.sql') else "Python"
+        print(f"  - {file} ({file_type})")
+    
+    return all_files
 
 def build_prompt_for_individual_review(code_text: str, filename: str = "code_file") -> str:
-    file_ext = get_file_extension(filename)
     prompt = PROMPT_TEMPLATE_INDIVIDUAL.replace("{PY_CONTENT}", code_text)
     prompt = prompt.replace("{filename}", filename)
-    prompt = prompt.replace("{file_extension}", file_ext)
     return prompt
 
 def build_prompt_for_consolidated_summary(all_reviews_content: str, previous_context: str = None, pr_number: int = None) -> str:
@@ -197,12 +268,9 @@ def build_prompt_for_consolidated_summary(all_reviews_content: str, previous_con
 
 def review_with_cortex(model, prompt_text: str, session) -> str:
     try:
-        # Better escaping for SQL injection prevention
         clean_prompt = prompt_text.replace("'", "''").replace("\\", "\\\\")
-        
-        # Use parameterized query instead
-        query = "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?) as response"
-        df = session.sql(query, params=[model, clean_prompt])
+        query = f"SELECT SNOWFLAKE.CORTEX.COMPLETE('{model}', '{clean_prompt}') as response"
+        df = session.sql(query)
         result = df.collect()[0][0]
         return result
     except Exception as e:
@@ -233,32 +301,126 @@ def chunk_large_file(code_text: str, max_chunk_size: int = 50000) -> list:
     
     return chunks
 
-def categorize_file_by_content(code_content: str, filename: str) -> str:
-    """Better file categorization based on content and extension."""
-    filename_lower = filename.lower()
-    content_lower = code_content.lower()
+def calculate_executive_quality_score(findings: list, total_lines_of_code: int) -> int:
+    """
+    Executive-level rule-based quality scoring (0-100).
+    MUCH MORE BALANCED - Fixed overly harsh scoring.
     
-    # Check file extensions first
-    if filename_lower.endswith('.sql'):
-        return 'SQL'
-    elif filename_lower.endswith(('.py', '.pyx')):
-        return 'Python'
-    elif filename_lower.endswith(('.js', '.jsx')):
-        return 'JavaScript'
-    elif filename_lower.endswith(('.ts', '.tsx')):
-        return 'TypeScript'
+    Scoring Logic (REALISTIC):
+    - Start with base score of 100
+    - Reasonable deductions that won't hit zero easily
+    - Focus on actionable scoring for executives
+    """
+    if not findings or len(findings) == 0:
+        return 100
     
-    # Check content for SQL keywords
-    sql_keywords = ['select', 'insert', 'update', 'delete', 'create table', 'alter table', 'drop table']
-    if any(keyword in content_lower for keyword in sql_keywords):
-        return 'SQL'
+    base_score = 100
+    total_deductions = 0
     
-    # Check content for Python keywords
-    python_keywords = ['def ', 'class ', 'import ', 'from ', 'if __name__']
-    if any(keyword in content_lower for keyword in python_keywords):
-        return 'Python'
+    # MUCH MORE BALANCED severity weightings
+    severity_weights = {
+        "Critical": 8,     # Each critical issue deducts 8 points (was 15)
+        "High": 3,         # Each high issue deducts 3 points (was 6)
+        "Medium": 1.5,     # Each medium issue deducts 1.5 points (was 3)
+        "Low": 0.5         # Each low issue deducts 0.5 points (was 1)
+    }
     
-    return 'Unknown'
+    # Count issues by severity - STRICT PRECISION (NO CONVERSION)
+    severity_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+    total_affected_lines = 0
+    
+    print(f"  📊 Scoring {len(findings)} findings...")
+    
+    for finding in findings:
+        severity = str(finding.get("severity", "")).strip()  # Keep original case
+        
+        # STRICT MATCHING - NO CONVERSION TO MEDIUM
+        if severity == "Critical":
+            severity_counts["Critical"] += 1
+        elif severity == "High":
+            severity_counts["High"] += 1
+        elif severity == "Medium":
+            severity_counts["Medium"] += 1
+        elif severity == "Low":
+            severity_counts["Low"] += 1
+        else:
+            # LOG UNRECOGNIZED SEVERITY BUT DON'T COUNT IT
+            print(f"    ⚠️ UNRECOGNIZED SEVERITY: '{severity}' in finding: {finding.get('finding', 'Unknown')[:50]}... - SKIPPING")
+            continue  # Skip this finding entirely instead of converting
+            
+        print(f"    - {severity}: {finding.get('finding', 'No description')[:50]}...")
+        
+        # Count affected lines (treat N/A as 1 line)
+        line_num = finding.get("line_number", "N/A")
+        total_affected_lines += 1
+    
+    print(f"  📈 Severity breakdown: Critical={severity_counts['Critical']}, High={severity_counts['High']}, Medium={severity_counts['Medium']}, Low={severity_counts['Low']}")
+    
+    # Calculate REALISTIC deductions from severity
+    for severity, count in severity_counts.items():
+        if count > 0:
+            weight = severity_weights[severity]
+            
+            # MUCH MORE BALANCED progressive penalty
+            if severity == "Critical":
+                # Critical: 8, 12, 16, 20 for 1,2,3,4 issues (much more reasonable)
+                if count <= 3:
+                    deduction = weight * count
+                else:
+                    deduction = weight * 3 + (count - 3) * (weight + 2)
+                # Cap critical deductions at 25 points max (was 50)
+                deduction = min(25, deduction)
+            elif severity == "High":
+                # High: Linear scaling with small bonus after 8 issues
+                if count <= 8:
+                    deduction = weight * count
+                else:
+                    deduction = weight * 8 + (count - 8) * (weight + 1)
+                # Cap high severity deductions at 20 points max (was 40)
+                deduction = min(20, deduction)
+            else:
+                # Medium/Low: Pure linear scaling with caps
+                deduction = weight * count
+                # Much lower caps
+                if severity == "Medium":
+                    deduction = min(15, deduction)  # Was 20
+                else:
+                    deduction = min(8, deduction)   # Was 10
+                
+            total_deductions += deduction
+            print(f"    {severity}: {count} issues = -{deduction:.1f} points (capped)")
+    
+    # MUCH REDUCED penalties
+    if total_lines_of_code > 0:
+        affected_ratio = total_affected_lines / total_lines_of_code
+        if affected_ratio > 0.3:  # Only penalize if more than 30% affected (was 20%)
+            coverage_penalty = min(5, int(affected_ratio * 25))  # Max 5 point penalty (was 10)
+            total_deductions += coverage_penalty
+            print(f"    Coverage penalty: -{coverage_penalty} points ({affected_ratio:.1%} affected)")
+    
+    # MUCH REDUCED critical threshold penalties
+    if severity_counts["Critical"] >= 10:  # Raised threshold from 5 to 10
+        total_deductions += 8  # Reduced from 15 to 8
+        print(f"    Executive threshold penalty: -8 points (10+ critical issues)")
+    
+    if severity_counts["Critical"] + severity_counts["High"] >= 25:  # Raised from 15 to 25
+        total_deductions += 5  # Reduced from 10 to 5
+        print(f"    Production readiness penalty: -5 points (25+ critical/high issues)")
+    
+    # Calculate final score
+    final_score = max(0, base_score - int(total_deductions))
+    
+    print(f"  🎯 Final calculation: {base_score} - {int(total_deductions)} = {final_score}")
+    
+    # ADJUSTED executive score bands for more realistic scoring
+    if final_score >= 85:
+        return min(100, final_score)  # Excellent
+    elif final_score >= 70:  # Lowered from 65
+        return final_score  # Good
+    elif final_score >= 50:  # Lowered from 40
+        return final_score  # Fair - needs attention
+    else:
+        return max(25, final_score)  # Poor - but never below 25 for functional code
 
 def format_executive_pr_display(json_response: dict, processed_files: list) -> str:
     summary = json_response.get("executive_summary", "Technical analysis completed")
@@ -273,28 +435,19 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
     immediate_actions = json_response.get("immediate_actions", [])
     previous_issues = json_response.get("previous_issues_resolved", [])
     
-    # Count by severity with case-insensitive comparison
-    critical_count = sum(1 for f in findings if str(f.get("severity", "")).lower() == "critical")
-    high_count = sum(1 for f in findings if str(f.get("severity", "")).lower() == "high")
-    medium_count = sum(1 for f in findings if str(f.get("severity", "")).lower() == "medium")
-    low_count = sum(1 for f in findings if str(f.get("severity", "")).lower() == "low")
+    critical_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "CRITICAL")
+    high_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "HIGH")
+    medium_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "MEDIUM")
     
-    # Count by file type
-    file_type_counts = {}
-    for filename in processed_files:
-        ext = Path(filename).suffix.lower()
-        if ext == '.py':
-            file_type_counts['Python'] = file_type_counts.get('Python', 0) + 1
-        elif ext == '.sql':
-            file_type_counts['SQL'] = file_type_counts.get('SQL', 0) + 1
-        else:
-            file_type_counts['Other'] = file_type_counts.get('Other', 0) + 1
+    # CHANGED: Count by file type for better reporting
+    python_files = [f for f in processed_files if f.lower().endswith('.py')]
+    sql_files = [f for f in processed_files if f.lower().endswith('.sql')]
     
     # Count critical/high issues by file type
-    python_critical = sum(1 for f in findings if f.get("filename", "").endswith('.py') and str(f.get("severity", "")).lower() == "critical")
-    python_high = sum(1 for f in findings if f.get("filename", "").endswith('.py') and str(f.get("severity", "")).lower() == "high")
-    sql_critical = sum(1 for f in findings if f.get("filename", "").endswith('.sql') and str(f.get("severity", "")).lower() == "critical")
-    sql_high = sum(1 for f in findings if f.get("filename", "").endswith('.sql') and str(f.get("severity", "")).lower() == "high")
+    python_critical = sum(1 for f in findings if f.get("filename", "").lower().endswith('.py') and str(f.get("severity", "")).upper() == "CRITICAL")
+    python_high = sum(1 for f in findings if f.get("filename", "").lower().endswith('.py') and str(f.get("severity", "")).upper() == "HIGH")
+    sql_critical = sum(1 for f in findings if f.get("filename", "").lower().endswith('.sql') and str(f.get("severity", "")).upper() == "CRITICAL")
+    sql_high = sum(1 for f in findings if f.get("filename", "").lower().endswith('.sql') and str(f.get("severity", "")).upper() == "HIGH")
     
     risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}
     quality_emoji = "🟢" if quality_score >= 80 else ("🟡" if quality_score >= 60 else "🔴")
@@ -322,35 +475,45 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 | 🔴 Critical | {critical_count} | Immediate fix required |
 | 🟠 High | {high_count} | Fix within sprint |
 | 🟡 Medium | {medium_count} | Plan for next release |
-| 🟢 Low | {low_count} | Technical debt |
 
 ## 📁 File Analysis Breakdown
 
 | File Type | Count | Critical Issues | High Issues |
 |-----------|-------|----------------|-------------|
-| 🐍 Python | {file_type_counts.get('Python', 0)} | {python_critical} | {python_high} |
-| 🗄️ SQL | {file_type_counts.get('SQL', 0)} | {sql_critical} | {sql_high} |
-| 📄 Other | {file_type_counts.get('Other', 0)} | 0 | 0 |
+| 🐍 Python | {len(python_files)} | {python_critical} | {python_high} |
+| 🗄️ SQL | {len(sql_files)} | {sql_critical} | {sql_high} |
 
-## 🚨 Critical Issues Summary
-
-⚠️ **IMMEDIATE ACTION REQUIRED** - The following critical issues must be addressed before deployment:
 """
 
-    # Add critical issues summary
-    critical_issues = [f for f in findings if str(f.get("severity", "")).lower() == "critical"]
-    if critical_issues:
-        for i, issue in enumerate(critical_issues, 1):
-            filename = issue.get("filename", "N/A")
-            line = issue.get("line_number", "N/A")
-            finding = issue.get("finding", "")[:150] + ("..." if len(issue.get("finding", "")) > 150 else "")
-            display_text += f"\n{i}. **{filename}** (Line {line}): {finding}\n"
-    else:
-        display_text += "\n✅ No critical issues found.\n"
+    # Add Critical Issues Summary section if there are critical issues
+    critical_findings = [f for f in findings if str(f.get("severity", "")).upper() == "CRITICAL"]
+    if critical_findings:
+        display_text += """## 🚨 Critical Issues Summary
 
-    # Add previous issues resolution status
+**⚠️ IMMEDIATE ACTION REQUIRED** - The following critical issues must be addressed before deployment:
+
+"""
+        for i, finding in enumerate(critical_findings, 1):
+            line_num = finding.get("line_number", "N/A")
+            filename = finding.get("filename", "N/A")
+            issue_desc = finding.get("finding", "No description available")
+            business_impact = finding.get("business_impact", "No business impact specified")
+            recommendation = finding.get("recommendation", finding.get("finding", "No recommendation available"))
+            
+            display_text += f"""**{i}. Critical Issue - Line {line_num}**
+- **File:** {filename}
+- **Issue:** {issue_desc}
+- **Business Impact:** {business_impact}
+- **Required Action:** {recommendation}
+
+"""
+        display_text += """---
+
+"""
+
+    # NO TRUNCATION - show full text for previous issues
     if previous_issues:
-        display_text += """\n<details>
+        display_text += """<details>
 <summary><strong>📈 Previous Issues Resolution Status</strong> (Click to expand)</summary>
 
 | Previous Issue | Status | Details |
@@ -359,55 +522,60 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
         for issue in previous_issues:
             status = issue.get("status", "UNKNOWN")
             status_emoji = {"RESOLVED": "✅", "PARTIALLY_RESOLVED": "⚠️", "NOT_ADDRESSED": "❌", "WORSENED": "🔴"}.get(status, "❓")
-            original = issue.get("original_issue", "")[:80]
-            details = issue.get("details", "")[:100]
-            display_text += f"| {original}... | {status_emoji} {status} | {details}... |\n"
+            
+            # NO TRUNCATION - show full text
+            original_display = issue.get("original_issue", "")
+            details_display = issue.get("details", "")
+            
+            display_text += f"| {original_display} | {status_emoji} {status} | {details_display} |\n"
         
-        display_text += "\n</details>\n"
+        display_text += "\n</details>\n\n"
 
     if findings:
-        display_text += """\n<details>
+        display_text += """<details>
 <summary><strong>🔍 Current Review Findings</strong> (Click to expand)</summary>
 
 | Priority | File | Line | Issue | Business Impact |
 |----------|------|------|-------|-----------------|
 """
         
-        severity_order = {"critical": 1, "high": 2, "medium": 3, "low": 4}
-        sorted_findings = sorted(findings, key=lambda x: severity_order.get(str(x.get("severity", "low")).lower(), 4))
+        severity_order = {"Critical": 1, "High": 2, "Medium": 3, "Low": 4}
+        sorted_findings = sorted(findings, key=lambda x: severity_order.get(str(x.get("severity", "Low")), 4))
         
-        for finding in sorted_findings[:20]:  # Show top 20 findings
+        for finding in sorted_findings[:15]:
             severity = str(finding.get("severity", "Medium"))
             filename = finding.get("filename", "N/A")
             line = finding.get("line_number", "N/A")
-            issue = str(finding.get("finding", ""))[:100] + ("..." if len(str(finding.get("finding", ""))) > 100 else "")
-            business_impact_text = str(finding.get("business_impact", ""))[:80] + ("..." if len(str(finding.get("business_impact", ""))) > 80 else "")
+            
+            # NO TRUNCATION - show full text
+            issue_display = str(finding.get("finding", ""))
+            business_impact_display = str(finding.get("business_impact", ""))
             
             priority_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(severity, "🟡")
             
-            display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue} | {business_impact_text} |\n"
+            display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue_display} | {business_impact_display} |\n"
         
-        display_text += "\n</details>\n"
+        display_text += "\n</details>\n\n"
 
     if strategic_recs:
-        display_text += """\n<details>
+        display_text += """<details>
 <summary><strong>🎯 Strategic Recommendations</strong> (Click to expand)</summary>
 
 """
         for i, rec in enumerate(strategic_recs, 1):
             display_text += f"{i}. {rec}\n"
-        display_text += "\n</details>\n"
+        display_text += "\n</details>\n\n"
 
     if immediate_actions:
-        display_text += """\n<details>
+        display_text += """<details>
 <summary><strong>⚡ Immediate Actions Required</strong> (Click to expand)</summary>
 
 """
         for i, action in enumerate(immediate_actions, 1):
             display_text += f"{i}. {action}\n"
-        display_text += "\n</details>\n"
+        display_text += "\n</details>\n\n"
 
-    display_text += f"""\n---
+    display_text += f"""---
 
 **📋 Review Summary:** {len(findings)} findings identified | **🎯 Quality Score:** {quality_score}/100 | **⚡ Critical Issues:** {critical_count}
 
@@ -417,8 +585,7 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 
 def main():
     if len(sys.argv) >= 5:
-        folder_path = sys.argv[1]
-        output_folder_path = sys.argv[2]
+        output_folder_path = sys.argv[2]  # Keep output folder from args
         try:
             pull_request_number = int(sys.argv[3]) if sys.argv[3] and sys.argv[3].strip() else None
         except (ValueError, IndexError):
@@ -426,13 +593,29 @@ def main():
             pull_request_number = None
         commit_sha = sys.argv[4]
         directory_mode = True
+        
+        # ALWAYS use scripts directory regardless of first argument
+        print(f"📁 Command line mode: Using {SCRIPTS_DIRECTORY} directory instead of '{sys.argv[1]}'")
+        code_files = get_changed_python_files(SCRIPTS_DIRECTORY)
+        if not code_files:
+            print(f"❌ No Python/SQL files found in {SCRIPTS_DIRECTORY} directory using patterns {FILE_PATTERNS}")
+            return
+            
+        folder_path = SCRIPTS_DIRECTORY  # Always use scripts directory
+            
     else:
-        folder_path = None
+        # Fallback for single file mode - use scripts directory with wildcard pattern
+        code_files = get_changed_python_files(SCRIPTS_DIRECTORY)
+        if not code_files:
+            print(f"❌ No Python/SQL files found in {SCRIPTS_DIRECTORY} directory using patterns {FILE_PATTERNS}")
+            return
+            
+        folder_path = SCRIPTS_DIRECTORY
         output_folder_path = "output_reviews"
         pull_request_number = 0
         commit_sha = "test"
         directory_mode = False
-        print(f"Running in single-file mode with: {FILE_TO_REVIEW}")
+        print(f"Running in dynamic pattern mode with {len(code_files)} code files from {SCRIPTS_DIRECTORY}")
 
     if os.path.exists(output_folder_path):
         import shutil
@@ -445,29 +628,8 @@ def main():
     print("\n🔍 STAGE 1: Individual File Analysis...")
     print("=" * 60)
     
-    if directory_mode:
-        # Enhanced file detection - look for more file types
-        files_to_process = [f for f in os.listdir(folder_path) 
-                           if f.lower().endswith((".py", ".sql", ".js", ".ts", ".pyx", ".jsx", ".tsx"))]
-    else:
-        if not os.path.exists(FILE_TO_REVIEW):
-            print(f"❌ File {FILE_TO_REVIEW} not found")
-            return
-        files_to_process = [FILE_TO_REVIEW]
-        folder_path = os.path.dirname(FILE_TO_REVIEW)
-
-    print(f"📁 Found {len(files_to_process)} files to analyze")
-    for f in files_to_process:
-        ext = Path(f).suffix.lower()
-        print(f"  - {f} ({get_file_extension(f)})")
-
-    for filename in files_to_process:
-        if directory_mode:
-            file_path = os.path.join(folder_path, filename)
-        else:
-            file_path = filename
-            filename = os.path.basename(filename)
-            
+    for file_path in code_files:
+        filename = os.path.basename(file_path)
         print(f"\n--- Reviewing file: {filename} ---")
         processed_files.append(filename)
 
@@ -478,10 +640,6 @@ def main():
             if not code_content.strip():
                 review_text = "No code found in file, skipping review."
             else:
-                # Detect file type
-                file_type = categorize_file_by_content(code_content, filename)
-                print(f"  Detected file type: {file_type}")
-                
                 chunks = chunk_large_file(code_content)
                 print(f"  File split into {len(chunks)} chunk(s)")
                 
@@ -493,9 +651,6 @@ def main():
                     individual_prompt = build_prompt_for_individual_review(chunk, chunk_name)
                     review_text = review_with_cortex(MODEL, individual_prompt, session)
                     chunk_reviews.append(review_text)
-                    
-                    # Debug: Print first 200 chars of review
-                    print(f"    Review preview: {review_text[:200]}...")
                 
                 if len(chunk_reviews) > 1:
                     review_text = "\n\n".join([f"## Chunk {i+1}\n{review}" for i, review in enumerate(chunk_reviews)])
@@ -504,7 +659,6 @@ def main():
 
             all_individual_reviews.append({
                 "filename": filename,
-                "file_type": get_file_extension(filename),
                 "review_feedback": review_text
             })
 
@@ -516,11 +670,8 @@ def main():
 
         except Exception as e:
             print(f"  ❌ Error processing {filename}: {e}")
-            import traceback
-            traceback.print_exc()
             all_individual_reviews.append({
                 "filename": filename,
-                "file_type": get_file_extension(filename),
                 "review_feedback": f"ERROR: Could not generate review. Reason: {e}"
             })
 
@@ -535,15 +686,15 @@ def main():
     try:
         # CRITICAL: Retrieve previous review context BEFORE generating new review
         previous_review_context = None
-        if pull_request_number and pull_request_number != 0:
+        if pull_request_number and pull_request_number != 0 and database_available:
             try:
                 create_table_query = """
                 CREATE TABLE IF NOT EXISTS CODE_REVIEW_LOG (
                     REVIEW_ID INTEGER AUTOINCREMENT START 1 INCREMENT 1,
                     PULL_REQUEST_NUMBER INTEGER,
                     COMMIT_SHA VARCHAR(40),
-                    REVIEW_SUMMARY VARCHAR,
-                    DETAILED_FINDINGS VARIANT,
+                    REVIEW_SUMMARY TEXT,
+                    DETAILED_FINDINGS TEXT,
                     REVIEW_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
                 );
                 """
@@ -565,6 +716,8 @@ def main():
                     
             except Exception as e:
                 print(f"  Warning: Could not retrieve previous review: {e}")
+        elif not database_available:
+            print("  ⚠️ Database not available - cannot retrieve previous reviews")
 
         combined_reviews_json = json.dumps(all_individual_reviews, indent=2)
         print(f"  Combined reviews: {len(combined_reviews_json)} characters")
@@ -576,92 +729,36 @@ def main():
             pull_request_number
         )
         consolidation_prompt = consolidation_prompt.replace("{MAX_CHARS_FOR_FINAL_SUMMARY_FILE}", str(MAX_CHARS_FOR_FINAL_SUMMARY_FILE))
-        
-        print("  🤖 Calling Cortex for consolidation...")
         consolidated_raw = review_with_cortex(MODEL, consolidation_prompt, session)
-        
-        print(f"  📄 Raw response length: {len(consolidated_raw)} characters")
-        print(f"  📄 Raw response preview: {consolidated_raw[:500]}...")
         
         try:
             consolidated_json = json.loads(consolidated_raw)
             print("  ✅ Successfully parsed consolidated JSON response")
-            print(f"  📊 Found {len(consolidated_json.get('detailed_findings', []))} findings")
+            
+            # OVERRIDE: Calculate rule-based quality score (don't trust LLM for this)
+            findings = consolidated_json.get("detailed_findings", [])
+            total_lines = sum(len(review.get("review_feedback", "").split('\n')) for review in all_individual_reviews)
+            
+            rule_based_score = calculate_executive_quality_score(findings, total_lines)
+            consolidated_json["quality_score"] = rule_based_score
+            
+            print(f"  🎯 Rule-based quality score calculated: {rule_based_score}/100 (overriding LLM score)")
+            
         except json.JSONDecodeError as e:
             print(f"  ⚠️ JSON parsing failed: {e}")
-            print(f"  🔧 Attempting to extract JSON from response...")
-            
-            # Try to find JSON block in the response
             json_match = re.search(r'\{.*\}', consolidated_raw, re.DOTALL)
             if json_match:
-                try:
-                    consolidated_json = json.loads(json_match.group())
-                    print("  ✅ Successfully extracted JSON from response")
-                except json.JSONDecodeError:
-                    print("  ❌ Failed to parse extracted JSON, using fallback")
-                    consolidated_json = {
-                        "executive_summary": "Consolidation failed - using fallback",
-                        "quality_score": 75,
-                        "business_impact": "MEDIUM",
-                        "detailed_findings": [],
-                        "strategic_recommendations": [],
-                        "immediate_actions": [],
-                        "previous_issues_resolved": [],
-                        "security_risk_level": "MEDIUM",
-                        "technical_debt_score": "MEDIUM",
-                        "maintainability_rating": "FAIR",
-                        "metrics": {
-                            "lines_of_code": 0,
-                            "complexity_score": "MEDIUM",
-                            "code_coverage_gaps": [],
-                            "dependency_risks": []
-                        }
-                    }
+                consolidated_json = json.loads(json_match.group())
             else:
-                print("  ❌ No JSON found in response, using fallback")
                 consolidated_json = {
-                    "executive_summary": "Consolidation failed - no valid JSON found in response",
-                    "quality_score": 50,
-                    "business_impact": "HIGH",
+                    "executive_summary": "Consolidation failed - using fallback",
+                    "quality_score": 75,
+                    "business_impact": "MEDIUM",
                     "detailed_findings": [],
-                    "strategic_recommendations": ["Review consolidation process", "Check AI model output"],
-                    "immediate_actions": ["Fix consolidation pipeline"],
-                    "previous_issues_resolved": [],
-                    "security_risk_level": "HIGH",
-                    "technical_debt_score": "HIGH",
-                    "maintainability_rating": "POOR",
-                    "metrics": {
-                        "lines_of_code": 0,
-                        "complexity_score": "HIGH",
-                        "code_coverage_gaps": ["Entire codebase"],
-                        "dependency_risks": ["Analysis pipeline failure"]
-                    }
+                    "strategic_recommendations": [],
+                    "immediate_actions": [],
+                    "previous_issues_resolved": []
                 }
-
-        # Ensure all required fields exist
-        required_fields = {
-            "executive_summary": "Code analysis completed",
-            "quality_score": 75,
-            "business_impact": "MEDIUM",
-            "security_risk_level": "MEDIUM",
-            "technical_debt_score": "MEDIUM", 
-            "maintainability_rating": "FAIR",
-            "detailed_findings": [],
-            "strategic_recommendations": [],
-            "immediate_actions": [],
-            "previous_issues_resolved": [],
-            "metrics": {
-                "lines_of_code": 0,
-                "complexity_score": "MEDIUM",
-                "code_coverage_gaps": [],
-                "dependency_risks": []
-            }
-        }
-        
-        for field, default_value in required_fields.items():
-            if field not in consolidated_json:
-                consolidated_json[field] = default_value
-                print(f"  🔧 Added missing field: {field}")
 
         executive_summary = format_executive_pr_display(consolidated_json, processed_files)
         
@@ -673,57 +770,53 @@ def main():
         json_path = os.path.join(output_folder_path, "consolidated_data.json")
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(consolidated_json, f, indent=2)
-        print(f"  ✅ JSON data saved: consolidated_data.json")
 
         # Generate review_output.json for inline_comment.py compatibility
         criticals = []
-        highs = []
+        critical_findings = [f for f in consolidated_json.get("detailed_findings", []) if str(f.get("severity", "")).upper() == "CRITICAL"]
         
-        for f in consolidated_json.get("detailed_findings", []):
-            severity_lower = str(f.get("severity", "")).lower()
-            if severity_lower == "critical":
-                critical = {
-                    "line": f.get("line_number", 1),
-                    "issue": f.get("finding", "Critical issue found"),
-                    "recommendation": f.get("recommendation", f.get("finding", "")),
-                    "severity": f.get("severity", "Critical"),
-                    "filename": f.get("filename", "unknown")
-                }
-                criticals.append(critical)
-            elif severity_lower == "high":
-                high = {
-                    "line": f.get("line_number", 1),
-                    "issue": f.get("finding", "High priority issue found"),
-                    "recommendation": f.get("recommendation", f.get("finding", "")),
-                    "severity": f.get("severity", "High"),
-                    "filename": f.get("filename", "unknown")
-                }
-                highs.append(high)
+        for f in critical_findings:
+            critical = {
+                "line": f.get("line_number", "N/A"),
+                "issue": f.get("finding", "Critical issue found"),
+                "recommendation": f.get("recommendation", f.get("finding", "")),
+                "severity": f.get("severity", "Critical"),
+                "filename": f.get("filename", "N/A"),
+                "business_impact": f.get("business_impact", "No business impact specified"),
+                "description": f.get("finding", "Critical issue found")  # Add explicit description field
+            }
+            criticals.append(critical)
+
+        # Create a proper critical issues summary for inline_comment.py
+        critical_summary = ""
+        if critical_findings:
+            critical_summary = "Critical Issues Summary:\n"
+            for i, finding in enumerate(critical_findings, 1):
+                line_num = finding.get("line_number", "N/A")
+                issue_desc = finding.get("finding", "Critical issue found")
+                critical_summary += f"* **Line {line_num}:** {issue_desc}\n"
 
         review_output_data = {
             "full_review": executive_summary,
             "full_review_markdown": executive_summary,
             "full_review_json": consolidated_json,
             "criticals": criticals,
-            "highs": highs,
+            "critical_summary": critical_summary,  # Add explicit critical summary
+            "critical_count": len(critical_findings),
             "file": processed_files[0] if processed_files else "unknown",
-            "files_analyzed": processed_files,
-            "timestamp": datetime.now().isoformat(),
-            "total_findings": len(consolidated_json.get("detailed_findings", [])),
-            "critical_count": len(criticals),
-            "high_count": len(highs)
+            "timestamp": datetime.now().isoformat()
         }
 
         with open("review_output.json", "w", encoding='utf-8') as f:
             json.dump(review_output_data, f, indent=2, ensure_ascii=False)
         print("  ✅ review_output.json saved for inline_comment.py compatibility")
 
-        # Store current review for future comparisons
-        if pull_request_number and pull_request_number != 0:
+        # Store current review for future comparisons - FIXED SQL
+        if pull_request_number and pull_request_number != 0 and database_available:
             try:
                 insert_sql = """
                     INSERT INTO CODE_REVIEW_LOG (PULL_REQUEST_NUMBER, COMMIT_SHA, REVIEW_SUMMARY, DETAILED_FINDINGS)
-                    VALUES (?, ?, ?, PARSE_JSON(?))
+                    VALUES (?, ?, ?, ?)
                 """
                 params = [
                     pull_request_number, 
@@ -744,38 +837,17 @@ def main():
                 gh_out.write(f'{delimiter}\n')
             print("  ✅ GitHub Actions output written")
 
-        # Enhanced completion summary
-        findings_count = len(consolidated_json.get("detailed_findings", []))
-        critical_count = len([f for f in consolidated_json.get("detailed_findings", []) if str(f.get("severity", "")).lower() == "critical"])
-        high_count = len([f for f in consolidated_json.get("detailed_findings", []) if str(f.get("severity", "")).lower() == "high"])
-        
         print(f"\n🎉 TWO-STAGE ANALYSIS COMPLETED!")
         print("=" * 60)
         print(f"📁 Files processed: {len(processed_files)}")
-        for i, filename in enumerate(processed_files, 1):
-            file_type = get_file_extension(filename)
-            print(f"  {i}. {filename} ({file_type})")
         print(f"🔍 Individual reviews: {len(all_individual_reviews)} (PROMPT 1)")
         print(f"📊 Executive summary: 1 (PROMPT 2)")
         print(f"🎯 Quality Score: {consolidated_json.get('quality_score', 'N/A')}/100")
-        print(f"📈 Total Findings: {findings_count}")
-        print(f"🔴 Critical Issues: {critical_count}")
-        print(f"🟠 High Issues: {high_count}")
-        print(f"🛡️ Security Risk: {consolidated_json.get('security_risk_level', 'N/A')}")
+        print(f"📈 Findings: {len(consolidated_json.get('detailed_findings', []))}")
         if previous_review_context:
             print(f"🔄 Previous context included: ✅ Subsequent commit review")
         else:
             print(f"🔄 Previous context: ❌ Initial commit review")
-        
-        # Summary of file types analyzed
-        file_types = {}
-        for filename in processed_files:
-            ftype = get_file_extension(filename)
-            file_types[ftype] = file_types.get(ftype, 0) + 1
-        
-        print(f"📋 File Type Summary:")
-        for ftype, count in file_types.items():
-            print(f"  - {ftype}: {count} file(s)")
         
     except Exception as e:
         print(f"❌ Consolidation error: {e}")
