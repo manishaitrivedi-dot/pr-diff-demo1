@@ -791,13 +791,9 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
     risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}
     quality_emoji = "🟢" if quality_score >= 80 else ("🟡" if quality_score >= 60 else "🔴")
     
-    # SHORTENED Executive Summary - limit to 2 sentences max
-    if len(summary) > 200:
-        sentences = summary.split('. ')
-        if len(sentences) > 2:
-            summary = '. '.join(sentences[:2]) + '.'
-        elif len(summary) > 200:
-            summary = summary[:197] + '...'
+    # FIXED: Executive Summary - No truncation, just ensure minimum 30 characters
+    if len(summary) < 30:
+        summary = summary + " Code review analysis completed."
     
     display_text = f"""# 📊 Executive Code Review Report
 
@@ -854,7 +850,10 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
         
         display_text += "\n</details>\n\n"
 
-    if findings:
+    # FILTER OUT LOW PRIORITY ISSUES from Current Review Findings
+    non_low_findings = [f for f in findings if str(f.get("severity", "")).upper() != "LOW"]
+    
+    if non_low_findings:
         display_text += """<details>
 <summary><strong>🔍 Current Review Findings</strong> (Click to expand)</summary>
 
@@ -863,9 +862,9 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 """
         
         severity_order = {"Critical": 1, "High": 2, "Medium": 3, "Low": 4}
-        sorted_findings = sorted(findings, key=lambda x: severity_order.get(str(x.get("severity", "Low")), 4))
+        sorted_findings = sorted(non_low_findings, key=lambda x: severity_order.get(str(x.get("severity", "Low")), 4))
         
-        for finding in sorted_findings[:20]:  # Show top 20 findings
+        for finding in sorted_findings[:20]:  # Show top 20 non-low findings
             severity = str(finding.get("severity", "Medium"))
             filename = finding.get("filename", "N/A")
             line = finding.get("line_number", "N/A")
