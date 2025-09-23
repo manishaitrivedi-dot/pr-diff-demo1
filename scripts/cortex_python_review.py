@@ -786,22 +786,9 @@ def main():
 
         if 'GITHUB_OUTPUT' in os.environ:
             delimiter = str(uuid.uuid4())
-            
-            # Create enhanced GitHub output with proper critical issues summary
-            github_output_text = executive_summary
-            
-            # If there are critical issues, add them properly formatted
-            critical_findings = [f for f in consolidated_json.get("detailed_findings", []) if str(f.get("severity", "")).upper() == "CRITICAL"]
-            if critical_findings:
-                github_output_text += "\n\n**Critical Issues Summary:**\n"
-                for finding in critical_findings:
-                    line_num = finding.get("line_number", "N/A")
-                    issue_desc = finding.get("finding", "Critical issue requiring immediate attention")
-                    github_output_text += f"* **Line {line_num}:** {issue_desc}\n"
-            
             with open(os.environ['GITHUB_OUTPUT'], 'a') as gh_out:
                 gh_out.write(f'consolidated_summary_text<<{delimiter}\n')
-                gh_out.write(f'{github_output_text}\n')
+                gh_out.write(f'{executive_summary}\n')
                 gh_out.write(f'{delimiter}\n')
             print("  ✅ GitHub Actions output written")
 
