@@ -837,18 +837,19 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
         display_text += """<details>
 <summary><strong>📈 Previous Issues Resolution Status</strong> (Click to expand)</summary>
 
-| Previous Issue | Line | Status | Details |
-|----------------|------|--------|---------|
+| Previous Issue | File | Line | Status | Details |
+|----------------|------|------|--------|---------|
 """
         for issue in previous_issues:
             status = issue.get("status", "UNKNOWN")
             status_emoji = {"RESOLVED": "✅", "PARTIALLY_RESOLVED": "⚠️", "NOT_ADDRESSED": "❌", "WORSENED": "🔴"}.get(status, "❓")
             
             original_display = issue.get("original_issue", "")
-            line_number = issue.get("line_number", "N/A")  # Now includes line number
+            line_number = issue.get("line_number", "N/A")
+            filename = issue.get("filename", "N/A")  # Added filename
             details_display = issue.get("details", "")
             
-            display_text += f"| {original_display} | {line_number} | {status_emoji} {status} | {details_display} |\n"
+            display_text += f"| {original_display} | {filename} | {line_number} | {status_emoji} {status} | {details_display} |\n"
         
         display_text += "\n</details>\n\n"
 
@@ -1131,8 +1132,9 @@ def main():
             critical_summary = "Critical Issues Summary:\n"
             for i, finding in enumerate(critical_findings, 1):
                 line_num = finding.get("line_number", "N/A")
+                filename = finding.get("filename", "N/A")
                 # CUSTOM FORMAT: "Critical issues are also posted as inline comments on X line"
-                critical_summary += f"* **Line {line_num}:** Critical issues are also posted as inline comments on {line_num} line\n"
+                critical_summary += f"* **Line {line_num}:** Critical issues are also posted as inline comments on {line_num} line *{filename}\n"
 
         # IMPORTANT: Generate this BEFORE the LLM comparison stage so it's always available
         review_output_data = {
@@ -1183,6 +1185,7 @@ def main():
                         for issue_status in comparison_result.get('issue_status', []):
                             resolved_issue = {
                                 "original_issue": issue_status.get('issue', ''),
+                                "filename": issue_status.get('filename', 'N/A'),  # Added filename support
                                 "line_number": issue_status.get('line_number', 'N/A'),
                                 "status": issue_status.get('status', 'UNKNOWN'),
                                 "details": issue_status.get('reasoning', '')
