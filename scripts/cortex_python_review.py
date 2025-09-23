@@ -67,44 +67,42 @@ PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level code reviewer wi
 4.  **Your entire response MUST be under 65,000 characters.** Include findings of all severities but prioritize Critical and High severity issues.
 
 # REVIEW PRIORITIES (Strict Order)
-1.  Security & Correctness (SQL Injection, Hardcoded Credentials, Input Validation)
+1.  Security & Correctness (Real SQL Injection with User Input, Production Credentials)
 2.  Reliability & Error-handling
-3.  Performance & Complexity (SQL Performance, Query Optimization)
+3.  Performance & Complexity (Major Bottlenecks, Resource Issues)
 4.  Readability & Maintainability
 5.  Testability
 
-# CRITICAL SECURITY FOCUS AREAS:
-**For SQL Code & Database Operations:**
--   **SQL Injection vulnerabilities** - Dynamic SQL construction, string concatenation in queries, f-strings in SQL, unsanitized user inputs
--   **Missing parameterization** - Raw user input in WHERE clauses, ORDER BY, table names, LIMIT clauses
--   **Hardcoded credentials** - Database passwords, connection strings, API keys in plain text
--   **Unsafe dynamic queries** - Building SQL with string formatting, missing input validation
--   **Missing WHERE clauses** - UPDATE/DELETE without proper conditions (data corruption risk)
--   **Information disclosure** - Verbose error messages exposing schema, stack traces in production
--   **SQL Performance issues** - Missing indexes, N+1 queries, inefficient JOINs, missing LIMIT clauses
--   **Access control** - Missing authorization checks, overly broad permissions
+# BALANCED SECURITY FOCUS AREAS:
+**For SQL Code & Database Operations (BE REALISTIC):**
+-   **CRITICAL ONLY:** Confirmed SQL injection with user input paths, production credentials exposed in code, DELETE/UPDATE without WHERE affecting entire tables, data breach risks
+-   **HIGH:** Missing parameterization with potential user input exposure, significant security gaps, major performance bottlenecks affecting production
+-   **MEDIUM:** Hardcoded non-production values, suboptimal queries, missing indexes, maintainability issues, code organization problems
+-   **LOW:** Style inconsistencies, minor optimizations, documentation gaps, cosmetic improvements
 
-**For Python Code:**
--   **Code injection** - Use of eval(), exec(), compile() with user input
--   **Subprocess injection** - Unsanitized shell commands, os.system() calls
--   **Path traversal** - File operations with user-controlled paths
--   **Unsafe deserialization** - pickle.loads(), yaml.load() without safety
+**For Python Code (BE REALISTIC):**
+-   **CRITICAL ONLY:** Confirmed code injection with user input (eval/exec with user data), production credential exposure, data corruption risks
+-   **HIGH:** Significant error handling gaps, major security concerns, subprocess vulnerabilities with user input
+-   **MEDIUM:** Code quality improvements, minor security concerns, maintainability issues, missing error handling
+-   **LOW:** Style improvements, minor optimizations, documentation gaps, cosmetic issues
 
-# SEVERITY GUIDELINES (Be Realistic and Balanced - MOST ISSUES SHOULD BE MEDIUM OR LOW)
--   **Critical:** ONLY for SQL injection, hardcoded credentials, data loss risks, security vulnerabilities, system crashes, production outages
--   **High:** ONLY for significant error handling gaps, major performance bottlenecks, security concerns, missing authorization
--   **Medium:** Code quality improvements, minor performance issues, maintainability concerns, documentation gaps, missing indexes
--   **Low:** Style improvements, minor optimizations, non-critical suggestions, cosmetic issues
+# REALISTIC SEVERITY GUIDELINES (MANDATORY - MOST ISSUES ARE NOT CRITICAL):
+-   **Critical:** 0-2% of findings (extremely rare - only for confirmed security vulnerabilities with user input or production credential exposure)
+-   **High:** 5-15% of findings (significant but fixable issues)
+-   **Medium:** 50-60% of findings (most common - code quality and maintainability)
+-   **Low:** 25-40% of findings (style and minor improvements)
 
-# REALISTIC SEVERITY DISTRIBUTION (MANDATORY):
-- Critical: 0-5% of findings (very rare - only for security vulnerabilities)
-- High: 10-20% of findings (significant issues)
-- Medium: 40-50% of findings (most common - code quality)
-- Low: 30-40% of findings (common - style/minor issues)
+# COMMON SQL PATTERNS THAT ARE **NOT CRITICAL**:
+- Hardcoded database/schema names: **Medium** (maintainability issue)
+- Missing comments: **Low** (documentation)
+- Suboptimal JOIN patterns: **Medium** (performance)
+- Missing indexes (without proof of performance impact): **Medium**
+- Static SQL without user input: **Medium at most** (not critical)
+- Development/test connection strings: **Medium** (not critical unless production)
 
 # ELIGIBILITY CRITERIA FOR FINDINGS (ALL must be met)
 -   **Evidence:** Quote the exact code snippet and cite the line number.
--   **Severity:** Assign {Low | Medium | High | Critical} - BE REALISTIC, most issues should be Medium or Low.
+-   **Severity:** Assign {Low | Medium | High | Critical} - BE VERY CONSERVATIVE. Only use Critical for confirmed security vulnerabilities.
 -   **Impact & Action:** Briefly explain the issue and provide a minimal, safe correction.
 -   **Non-trivial:** Skip purely stylistic nits (e.g., import order, line length) that a linter would catch.
 
@@ -114,17 +112,17 @@ PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level code reviewer wi
 -   NEVER suggest logging sensitive user data or internal paths. Suggest non-reversible fingerprints if context is needed.
 -   Do NOT recommend removing correct type hints or docstrings.
 -   If code in the file is already correct and idiomatic, do NOT invent problems.
--   DO NOT inflate severity levels - be conservative and realistic.
--   **For SQL files:** Look specifically for SQL injection risks, missing parameterization, hardcoded values, performance issues
--   **For Python files with SQL:** Look for f-strings in queries, string concatenation with user input, missing prepared statements
+-   DO NOT inflate severity levels - be very conservative. Most findings should be Medium or Low.
+-   **For SQL files:** Only mark Critical if there's confirmed SQL injection with user input. Hardcoded values are usually Medium.
+-   **For Python files with SQL:** Only mark Critical if there's confirmed injection vulnerability with user data.
 
 ---
 # OUTPUT FORMAT (Strict, professional, audit-ready)
 
-Your entire response MUST be under 65,000 characters. Include findings of all severity levels with realistic severity assignments.
+Your entire response MUST be under 65,000 characters. Include findings of all severity levels with REALISTIC severity assignments.
 
 ## Code Review Summary
-*A 2-3 sentence high-level summary. Mention the key strengths and the most critical areas for improvement, especially security concerns.*
+*A 2-3 sentence high-level summary. Mention the key strengths and the most critical areas for improvement, being realistic about severity.*
 
 ---
 ### Detailed Findings
@@ -134,13 +132,13 @@ Your entire response MUST be under 65,000 characters. Include findings of all se
 -   **Severity:** {Critical | High | Medium | Low}
 -   **Line:** {line_number}
 -   **Function/Context:** `{function_name_if_applicable}`
--   **Finding:** {A clear, concise description of the issue, its impact, and a recommended correction. For security issues, explain the attack vector.}
+-   **Finding:** {A clear, concise description of the issue, its impact, and a recommended correction. Be realistic about severity - most issues are Medium or Low.}
 
 **(Repeat for each finding)**
 
 ---
 ### Key Recommendations
-*Provide 2-3 high-level, actionable recommendations for improving the overall quality of the codebase based on the findings. Focus on security and business impact.*
+*Provide 2-3 high-level, actionable recommendations for improving the overall quality of the codebase based on the findings. Focus on the most impactful improvements.*
 
 ---
 # CODE TO REVIEW
@@ -159,15 +157,15 @@ Follow these instructions to populate the JSON fields:
 2.  **`quality_score` (number):** Assign an overall quality score (0-100) based on severity and number of findings.
 3.  **`business_impact` (string):** Assess overall business risk as "LOW", "MEDIUM", or "HIGH".
 4.  **`technical_debt_score` (string):** Evaluate technical debt as "LOW", "MEDIUM", or "HIGH".
-5.  **`security_risk_level` (string):** Determine security risk as "LOW", "MEDIUM", "HIGH", or "CRITICAL". SQL injection and credential exposure should be CRITICAL.
+5.  **`security_risk_level` (string):** Determine security risk as "LOW", "MEDIUM", "HIGH", or "CRITICAL". Only use CRITICAL for confirmed SQL injection or production credential exposure.
 6.  **`maintainability_rating` (string):** Rate maintainability as "POOR", "FAIR", "GOOD", or "EXCELLENT".
 7.  **`detailed_findings` (array of objects):** Create an array of objects, where each object represents a single, distinct issue found in the code:
-         -   **`severity`**: Assign severity realistically: "Low", "Medium", "High", or "Critical". SQL injection and credential exposure should be Critical. MOST ISSUES SHOULD BE Medium or Low. Only use Critical for security vulnerabilities or data loss risks. Only use High for significant errors or performance issues.
+         -   **`severity`**: Assign severity VERY CONSERVATIVELY: "Low", "Medium", "High", or "Critical". CRITICAL should be 0-2% of all findings (only for confirmed security vulnerabilities with user input or production credential exposure). HIGH should be 5-15%. MEDIUM should be 50-60% (most common). LOW should be 25-40%.
          -   **`category`**: Assign category: "Security", "Performance", "Maintainability", "Best Practices", "Documentation", or "Error Handling".
          -   **`line_number`**: Extract the specific line number if mentioned in the review. If no line number is available, use "N/A".
          -   **`function_context`**: From the review text, identify the function or class name where the issue is located. If not applicable, use "global scope".
          -   **`finding`**: Write a clear, concise description of the issue, its potential impact, and a concrete recommendation.
-         -   **`business_impact`**: Explain how this affects business operations or risk. For security issues, mention data breach/compliance risks.
+         -   **`business_impact`**: Explain how this affects business operations or risk. Be realistic - most issues have low to medium business impact.
          -   **`recommendation`**: Provide specific technical solution.
          -   **`effort_estimate`**: Estimate effort as "LOW", "MEDIUM", or "HIGH".
          -   **`priority_ranking`**: Assign priority ranking (1 = highest priority).
@@ -178,21 +176,25 @@ Follow these instructions to populate the JSON fields:
          -   **`code_coverage_gaps`**: Array of areas needing test coverage.
          -   **`dependency_risks`**: Array of dependency-related risks.
 9.  **`strategic_recommendations` (array of strings):** Provide 2-3 high-level, actionable recommendations for technical leadership.
-10. **`immediate_actions` (array of strings):** List critical items requiring immediate attention.
+10. **`immediate_actions` (array of strings):** List critical items requiring immediate attention. Should be very few items.
 11. **`previous_issues_resolved` (array of objects):** For each issue from previous review, indicate status:
          -   **`original_issue`**: Brief description of the previous issue
          -   **`status`**: "RESOLVED", "PARTIALLY_RESOLVED", "NOT_ADDRESSED", or "WORSENED"
          -   **`details`**: Explanation of current status
 
-**CRITICAL INSTRUCTION FOR BALANCED REVIEWS:**
-Your entire response MUST be under {MAX_CHARS_FOR_FINAL_SUMMARY_FILE} characters. Include findings of all severity levels with realistic severity assignments:
--   Use "Critical" only for SQL injection, hardcoded credentials, security vulnerabilities, data loss risks, or system crashes
--   Use "High" only for significant error handling gaps or major performance issues  
--   Use "Medium" for code quality improvements and minor performance issues
--   Use "Low" for style improvements and non-critical suggestions
--   REALISTIC DISTRIBUTION: Expect mostly Medium (40-50%) and Low (30-40%) severity findings, with fewer High (10-20%) and very few Critical (0-5%)
+**CRITICAL INSTRUCTION FOR REALISTIC REVIEWS:**
+Your entire response MUST be under {MAX_CHARS_FOR_FINAL_SUMMARY_FILE} characters. Include findings of all severity levels with VERY CONSERVATIVE severity assignments:
+-   Use "Critical" ONLY for confirmed SQL injection with user input, production credential exposure, or confirmed data breach risks (0-2% of findings)
+-   Use "High" for significant security concerns, major performance issues, or significant error handling gaps (5-15% of findings)
+-   Use "Medium" for code quality issues, maintainability concerns, minor performance issues, hardcoded non-production values (50-60% of findings - MOST COMMON)
+-   Use "Low" for style improvements, minor optimizations, documentation gaps, cosmetic issues (25-40% of findings)
 
-**IMPORTANT:** Always analyze each review carefully for SQL injection vulnerabilities, hardcoded credentials, dynamic query construction, and other critical security problems. These must be reflected in the findings with Critical or High severity levels.
+**IMPORTANT SQL GUIDANCE:** 
+- Hardcoded database names/schemas: Medium (maintainability issue, not security)
+- Missing comments in SQL: Low (documentation)
+- Suboptimal queries without performance proof: Medium
+- Static SQL without user input: Medium at most
+- Only mark SQL issues as Critical if there's confirmed injection with user input
 
 Here are the individual code reviews to process:
 {ALL_REVIEWS_CONTENT}
@@ -229,7 +231,7 @@ def get_changed_python_files(folder_path=None):
     
     all_files = []
     
-    # CHANGED: Process both Python and SQL files
+    # Process both Python and SQL files
     for pattern in FILE_PATTERNS:
         # Use glob pattern to find files
         pattern_path = os.path.join(folder_path, pattern)
@@ -319,10 +321,10 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
     
     # MUCH MORE BALANCED severity weightings
     severity_weights = {
-        "Critical": 8,     # Each critical issue deducts 8 points (was 15)
-        "High": 3,         # Each high issue deducts 3 points (was 6)
-        "Medium": 1.5,     # Each medium issue deducts 1.5 points (was 3)
-        "Low": 0.5         # Each low issue deducts 0.5 points (was 1)
+        "Critical": 12,    # Each critical issue deducts 12 points (but there should be very few)
+        "High": 4,         # Each high issue deducts 4 points
+        "Medium": 1.5,     # Each medium issue deducts 1.5 points
+        "Low": 0.3         # Each low issue deducts 0.3 points
     }
     
     # Count issues by severity - STRICT PRECISION (NO CONVERSION)
@@ -363,29 +365,29 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
             
             # MUCH MORE BALANCED progressive penalty
             if severity == "Critical":
-                # Critical: 8, 12, 16, 20 for 1,2,3,4 issues (much more reasonable)
-                if count <= 3:
+                # Critical: Should be very rare, but high impact
+                if count <= 2:
                     deduction = weight * count
                 else:
-                    deduction = weight * 3 + (count - 3) * (weight + 2)
-                # Cap critical deductions at 25 points max (was 50)
-                deduction = min(25, deduction)
+                    deduction = weight * 2 + (count - 2) * (weight + 3)
+                # Cap critical deductions at 30 points max
+                deduction = min(30, deduction)
             elif severity == "High":
-                # High: Linear scaling with small bonus after 8 issues
-                if count <= 8:
+                # High: Linear scaling with small bonus after 10 issues
+                if count <= 10:
                     deduction = weight * count
                 else:
-                    deduction = weight * 8 + (count - 8) * (weight + 1)
-                # Cap high severity deductions at 20 points max (was 40)
-                deduction = min(20, deduction)
+                    deduction = weight * 10 + (count - 10) * (weight + 1)
+                # Cap high severity deductions at 25 points max
+                deduction = min(25, deduction)
             else:
                 # Medium/Low: Pure linear scaling with caps
                 deduction = weight * count
-                # Much lower caps
+                # Reasonable caps
                 if severity == "Medium":
-                    deduction = min(15, deduction)  # Was 20
+                    deduction = min(20, deduction)
                 else:
-                    deduction = min(8, deduction)   # Was 10
+                    deduction = min(10, deduction)
                 
             total_deductions += deduction
             print(f"    {severity}: {count} issues = -{deduction:.1f} points (capped)")
@@ -393,19 +395,19 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
     # MUCH REDUCED penalties
     if total_lines_of_code > 0:
         affected_ratio = total_affected_lines / total_lines_of_code
-        if affected_ratio > 0.3:  # Only penalize if more than 30% affected (was 20%)
-            coverage_penalty = min(5, int(affected_ratio * 25))  # Max 5 point penalty (was 10)
+        if affected_ratio > 0.4:  # Only penalize if more than 40% affected
+            coverage_penalty = min(5, int(affected_ratio * 20))  # Max 5 point penalty
             total_deductions += coverage_penalty
             print(f"    Coverage penalty: -{coverage_penalty} points ({affected_ratio:.1%} affected)")
     
-    # MUCH REDUCED critical threshold penalties
-    if severity_counts["Critical"] >= 10:  # Raised threshold from 5 to 10
-        total_deductions += 8  # Reduced from 15 to 8
-        print(f"    Executive threshold penalty: -8 points (10+ critical issues)")
+    # REALISTIC critical threshold penalties (should rarely trigger)
+    if severity_counts["Critical"] >= 3:  # Very high threshold
+        total_deductions += 10
+        print(f"    Executive threshold penalty: -10 points (3+ critical issues)")
     
-    if severity_counts["Critical"] + severity_counts["High"] >= 25:  # Raised from 15 to 25
-        total_deductions += 5  # Reduced from 10 to 5
-        print(f"    Production readiness penalty: -5 points (25+ critical/high issues)")
+    if severity_counts["Critical"] + severity_counts["High"] >= 20:  # High threshold
+        total_deductions += 5
+        print(f"    Production readiness penalty: -5 points (20+ critical/high issues)")
     
     # Calculate final score
     final_score = max(0, base_score - int(total_deductions))
@@ -415,12 +417,12 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
     # ADJUSTED executive score bands for more realistic scoring
     if final_score >= 85:
         return min(100, final_score)  # Excellent
-    elif final_score >= 70:  # Lowered from 65
+    elif final_score >= 70:
         return final_score  # Good
-    elif final_score >= 50:  # Lowered from 40
+    elif final_score >= 50:
         return final_score  # Fair - needs attention
     else:
-        return max(25, final_score)  # Poor - but never below 25 for functional code
+        return max(30, final_score)  # Poor - but never below 30 for functional code
 
 def format_executive_pr_display(json_response: dict, processed_files: list) -> str:
     summary = json_response.get("executive_summary", "Technical analysis completed")
@@ -438,8 +440,9 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
     critical_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "CRITICAL")
     high_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "HIGH")
     medium_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "MEDIUM")
+    low_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "LOW")
     
-    # CHANGED: Count by file type for better reporting
+    # Count by file type for better reporting
     python_files = [f for f in processed_files if f.lower().endswith('.py')]
     sql_files = [f for f in processed_files if f.lower().endswith('.sql')]
     
@@ -475,6 +478,7 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 | 🔴 Critical | {critical_count} | Immediate fix required |
 | 🟠 High | {high_count} | Fix within sprint |
 | 🟡 Medium | {medium_count} | Plan for next release |
+| 🟢 Low | {low_count} | Technical improvement |
 
 ## 📁 File Analysis Breakdown
 
@@ -510,8 +514,16 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
         display_text += """---
 
 """
+    else:
+        display_text += """## ✅ Critical Issues Summary
 
-    # NO TRUNCATION - show full text for previous issues
+**No critical security issues found.** This indicates good security practices in the codebase.
+
+---
+
+"""
+
+    # Previous issues resolution status
     if previous_issues:
         display_text += """<details>
 <summary><strong>📈 Previous Issues Resolution Status</strong> (Click to expand)</summary>
@@ -523,7 +535,6 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
             status = issue.get("status", "UNKNOWN")
             status_emoji = {"RESOLVED": "✅", "PARTIALLY_RESOLVED": "⚠️", "NOT_ADDRESSED": "❌", "WORSENED": "🔴"}.get(status, "❓")
             
-            # NO TRUNCATION - show full text
             original_display = issue.get("original_issue", "")
             details_display = issue.get("details", "")
             
@@ -542,12 +553,11 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
         severity_order = {"Critical": 1, "High": 2, "Medium": 3, "Low": 4}
         sorted_findings = sorted(findings, key=lambda x: severity_order.get(str(x.get("severity", "Low")), 4))
         
-        for finding in sorted_findings[:15]:
+        for finding in sorted_findings[:20]:  # Show top 20 findings
             severity = str(finding.get("severity", "Medium"))
             filename = finding.get("filename", "N/A")
             line = finding.get("line_number", "N/A")
             
-            # NO TRUNCATION - show full text
             issue_display = str(finding.get("finding", ""))
             business_impact_display = str(finding.get("business_impact", ""))
             
@@ -783,7 +793,7 @@ def main():
                 "severity": f.get("severity", "Critical"),
                 "filename": f.get("filename", "N/A"),
                 "business_impact": f.get("business_impact", "No business impact specified"),
-                "description": f.get("finding", "Critical issue found")  # Add explicit description field
+                "description": f.get("finding", "Critical issue found")
             }
             criticals.append(critical)
 
@@ -801,7 +811,7 @@ def main():
             "full_review_markdown": executive_summary,
             "full_review_json": consolidated_json,
             "criticals": criticals,
-            "critical_summary": critical_summary,  # Add explicit critical summary
+            "critical_summary": critical_summary,
             "critical_count": len(critical_findings),
             "file": processed_files[0] if processed_files else "unknown",
             "timestamp": datetime.now().isoformat()
