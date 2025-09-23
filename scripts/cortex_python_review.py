@@ -224,6 +224,7 @@ Follow these instructions to populate the JSON fields:
 11. **`previous_issues_resolved` (array of objects):** For each issue from previous review, indicate status:
          -   **`original_issue`**: Brief description of the previous issue
          -   **`line_number`**: Line number from the previous issue (if available)
+         -   **`filename`**: Filename from the previous issue (if available)
          -   **`status`**: "RESOLVED", "PARTIALLY_RESOLVED", "NOT_ADDRESSED", or "WORSENED"
          -   **`details`**: Explanation of current status
 
@@ -256,7 +257,7 @@ CRITICAL INSTRUCTION: You must analyze the new code changes with full awareness 
 2. Identify if any previous recommendations were implemented
 3. Note any new issues that may have been introduced
 4. Maintain continuity with previous review comments
-5. In the "previous_issues_resolved" section, provide specific status for each previous issue INCLUDING LINE NUMBERS
+5. In the "previous_issues_resolved" section, provide specific status for each previous issue INCLUDING LINE NUMBERS AND FILENAMES
 
 {consolidated_template}
 """
@@ -281,7 +282,7 @@ CRITICAL INSTRUCTION: You must analyze the new code changes with full awareness 
 2. Identify if any previous recommendations were implemented
 3. Note any new issues that may have been introduced
 4. Maintain continuity with previous review comments
-5. In the "previous_issues_resolved" section, provide specific status for each previous issue
+5. In the "previous_issues_resolved" section, provide specific status for each previous issue INCLUDING FILENAMES
 
 **[YOUR TASK]:**
 Provide your analysis in a structured JSON format. For each major issue identified in the **[PREVIOUS REVIEW]**, determine its status based on the **[NEW REVIEW]**. The possible statuses are:
@@ -299,6 +300,7 @@ The JSON output should follow this exact structure:
     {{
       "issue": "A concise summary of the original issue from the previous review.",
       "line_number": "Line number from the original issue if available, otherwise 'N/A'",
+      "filename": "Filename from the original issue if available, otherwise 'N/A'",
       "status": "RESOLVED | PARTIALLY_RESOLVED | NOT_ADDRESSED | WORSENED | NO_LONGER_APPLICABLE",
       "reasoning": "A brief explanation for your status decision, referencing the new review."
     }}
@@ -307,7 +309,8 @@ The JSON output should follow this exact structure:
     {{
       "issue": "Description of any new issues found in the new review that weren't in the previous review",
       "severity": "Critical | High | Medium | Low",
-      "line_number": "Line number if available"
+      "line_number": "Line number if available",
+      "filename": "Filename if available"
     }}
   ],
   "overall_improvement": "IMPROVED | NEUTRAL | WORSENED",
@@ -639,7 +642,7 @@ def store_review_log(pull_request_number, commit_sha, executive_summary, consoli
         return False
 
 def get_previous_review(pull_request_number):
-    """ENHANCED: Get previous review with line numbers from detailed findings"""
+    """ENHANCED: Get previous review with line numbers and filenames from detailed findings"""
     global database_available
     
     if not database_available:
@@ -666,25 +669,25 @@ def get_previous_review(pull_request_number):
             review_summary = json.loads(str(row['REVIEW_SUMMARY'])) if row['REVIEW_SUMMARY'] else {}
             findings_json = json.loads(str(row['DETAILED_FINDINGS_JSON'])) if row['DETAILED_FINDINGS_JSON'] else []
             
-            # Build detailed previous context with line numbers
+            # Build detailed previous context with line numbers and filenames
             previous_context = f"""Previous Review Summary:
 {json.dumps(review_summary, indent=2)[:1500]}
 
-Previous Detailed Findings with Line Numbers:
+Previous Detailed Findings with Line Numbers and Filenames:
 """
             
-            # Include line numbers and detailed info for each finding
+            # Include line numbers, filenames and detailed info for each finding
             for i, finding in enumerate(findings_json[:10]):  # Limit to first 10 findings
                 line_num = finding.get('line_number', 'N/A')
+                filename = finding.get('filename', 'N/A')  # ENHANCED: Include filename
                 severity = finding.get('severity', 'Unknown')
                 issue = finding.get('finding', 'No description')[:100]  # Truncate long descriptions
-                filename = finding.get('filename', 'Unknown file')
                 
                 previous_context += f"""
-{i+1}. [{severity}] Line {line_num} in {filename}: {issue}
+{i+1}. [{severity}] {filename}:{line_num} - {issue}
 """
             
-            print(f"  📋 Retrieved previous review from {row['REVIEW_TIMESTAMP']} with line numbers")
+            print(f"  📋 Retrieved previous review from {row['REVIEW_TIMESTAMP']} with line numbers and filenames")
             return previous_context
         else:
             print("  📋 No previous review found for this PR")
@@ -830,25 +833,24 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 
 """
 
-    # REMOVED: Critical Issues Summary section entirely
-
-    # ENHANCED: Previous issues resolution status WITH LINE NUMBERS
+    # ENHANCED: Previous issues resolution status WITH LINE NUMBERS AND FILENAMES
     if previous_issues:
         display_text += """<details>
 <summary><strong>📈 Previous Issues Resolution Status</strong> (Click to expand)</summary>
 
-| Previous Issue | Line | Status | Details |
-|----------------|------|--------|---------|
+| Previous Issue | File | Line | Status | Details |
+|----------------|------|------|--------|---------|
 """
         for issue in previous_issues:
             status = issue.get("status", "UNKNOWN")
             status_emoji = {"RESOLVED": "✅", "PARTIALLY_RESOLVED": "⚠️", "NOT_ADDRESSED": "❌", "WORSENED": "🔴"}.get(status, "❓")
             
             original_display = issue.get("original_issue", "")
-            line_number = issue.get("line_number", "N/A")  # Now includes line number
+            filename = issue.get("filename", "N/A")  # ENHANCED: Include filename
+            line_number = issue.get("line_number", "N/A")
             details_display = issue.get("details", "")
             
-            display_text += f"| {original_display} | {line_number} | {status_emoji} {status} | {details_display} |\n"
+            display_text += f"| {original_display} | {filename} | {line_number} | {status_emoji} {status} | {details_display} |\n"
         
         display_text += "\n</details>\n\n"
 
@@ -876,8 +878,6 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
             display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue_display} | {business_impact_display} |\n"
         
         display_text += "\n</details>\n\n"
-
-    # REMOVED: Strategic Recommendations section entirely
 
     if immediate_actions:
         display_text += """<details>
@@ -1184,6 +1184,7 @@ def main():
                             resolved_issue = {
                                 "original_issue": issue_status.get('issue', ''),
                                 "line_number": issue_status.get('line_number', 'N/A'),
+                                "filename": issue_status.get('filename', 'N/A'),  # ENHANCED: Include filename
                                 "status": issue_status.get('status', 'UNKNOWN'),
                                 "details": issue_status.get('reasoning', '')
                             }
@@ -1204,6 +1205,10 @@ def main():
                             json.dump(consolidated_json, f, indent=2)
                         
                         # IMPORTANT: Also update the review_output.json for inline_comment.py compatibility
+                        review_output_data["full_review"] = executive_summary
+                        review_output_data["full_review_markdown"] = executive_summary
+                        review_output_data["full_review_json"] = consolidated_json
+                        
                         with open("review_output.json", "w", encoding='utf-8') as f:
                             json.dump(review_output_data, f, indent=2, ensure_ascii=False)
                         
