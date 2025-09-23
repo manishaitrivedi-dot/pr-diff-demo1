@@ -468,29 +468,21 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
         return max(30, final_score)  # Poor - but never below 30 for functional code
 
 def setup_review_log_table():
-    """Setup the review log table with correct data types"""
+    """FIXED: Setup the review log table with VARIANT columns like the working code"""
     global database_available
     
     if not database_available:
         return False
         
     try:
-        # Create table with correct data types - FIXED: DETAILED_FINDINGS as TEXT, not VARIANT
+        # FIXED: Use VARIANT columns and simpler structure like the working code
         create_table_query = f"""
         CREATE TABLE IF NOT EXISTS {current_database}.{current_schema}.CODE_REVIEW_LOG (
-            REVIEW_ID INTEGER AUTOINCREMENT START 1 INCREMENT 1 PRIMARY KEY,
+            REVIEW_ID INTEGER AUTOINCREMENT START 1 INCREMENT 1,
             PULL_REQUEST_NUMBER INTEGER,
             COMMIT_SHA VARCHAR(40),
-            REVIEW_SUMMARY TEXT,
-            DETAILED_FINDINGS_JSON TEXT,
-            FILES_PROCESSED ARRAY,
-            QUALITY_SCORE INTEGER,
-            CRITICAL_COUNT INTEGER,
-            HIGH_COUNT INTEGER,
-            MEDIUM_COUNT INTEGER,
-            LOW_COUNT INTEGER,
-            BUSINESS_IMPACT VARCHAR(10),
-            SECURITY_RISK_LEVEL VARCHAR(10),
+            REVIEW_SUMMARY VARIANT,
+            DETAILED_FINDINGS_JSON VARIANT,
             REVIEW_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
         );
         """
@@ -502,7 +494,7 @@ def setup_review_log_table():
         return False
 
 def store_review_log(pull_request_number, commit_sha, executive_summary, consolidated_json, processed_files):
-    """Store review with enhanced metadata"""
+    """FIXED: Store review with VARIANT columns and correct parameter count"""
     global database_available
     
     if not database_available:
@@ -512,43 +504,19 @@ def store_review_log(pull_request_number, commit_sha, executive_summary, consoli
     try:
         findings = consolidated_json.get("detailed_findings", [])
         
-        # Count by severity
-        critical_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "CRITICAL")
-        high_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "HIGH")
-        medium_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "MEDIUM")
-        low_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "LOW")
-        
-        # FIXED: Use parameterized query with correct data types
+        # FIXED: Use simple parameterized query matching the working code
         insert_sql = f"""
-        INSERT INTO {current_database}.{current_schema}.CODE_REVIEW_LOG (
-            PULL_REQUEST_NUMBER, 
-            COMMIT_SHA, 
-            REVIEW_SUMMARY, 
-            DETAILED_FINDINGS_JSON,
-            FILES_PROCESSED,
-            QUALITY_SCORE,
-            CRITICAL_COUNT,
-            HIGH_COUNT,
-            MEDIUM_COUNT,
-            LOW_COUNT,
-            BUSINESS_IMPACT,
-            SECURITY_RISK_LEVEL
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO {current_database}.{current_schema}.CODE_REVIEW_LOG 
+            (PULL_REQUEST_NUMBER, COMMIT_SHA, REVIEW_SUMMARY, DETAILED_FINDINGS_JSON)
+            SELECT ?, ?, PARSE_JSON(?), PARSE_JSON(?)
         """
         
+        # FIXED: Exactly 4 parameters to match the query
         params = [
             pull_request_number,
             commit_sha,
-            executive_summary[:8000],  # Truncate for storage
-            json.dumps(findings),  # Store as JSON string, not VARIANT
-            processed_files,  # Array of filenames
-            consolidated_json.get("quality_score", 75),
-            critical_count,
-            high_count,
-            medium_count,
-            low_count,
-            consolidated_json.get("business_impact", "MEDIUM"),
-            consolidated_json.get("security_risk_level", "MEDIUM")
+            json.dumps(consolidated_json) if consolidated_json else None,  # Store entire JSON as VARIANT
+            json.dumps(findings) if findings else None  # Store findings as VARIANT
         ]
         
         session.sql(insert_sql, params=params).collect()
@@ -556,7 +524,7 @@ def store_review_log(pull_request_number, commit_sha, executive_summary, consoli
         
         # Verify the insert worked
         verify_query = f"""
-        SELECT REVIEW_ID, PULL_REQUEST_NUMBER, COMMIT_SHA, QUALITY_SCORE, CRITICAL_COUNT, HIGH_COUNT 
+        SELECT REVIEW_ID, PULL_REQUEST_NUMBER, COMMIT_SHA
         FROM {current_database}.{current_schema}.CODE_REVIEW_LOG 
         WHERE PULL_REQUEST_NUMBER = {pull_request_number} AND COMMIT_SHA = '{commit_sha}'
         ORDER BY REVIEW_TIMESTAMP DESC LIMIT 1
@@ -565,7 +533,7 @@ def store_review_log(pull_request_number, commit_sha, executive_summary, consoli
         
         if result:
             row = result[0]
-            print(f"  📋 Verified: Review ID {row['REVIEW_ID']}, Quality: {row['QUALITY_SCORE']}, Critical: {row['CRITICAL_COUNT']}, High: {row['HIGH_COUNT']}")
+            print(f"  📋 Verified: Review ID {row['REVIEW_ID']} stored successfully")
         else:
             print("  ⚠️ Warning: Could not verify review was stored")
             
@@ -578,7 +546,7 @@ def store_review_log(pull_request_number, commit_sha, executive_summary, consoli
         return False
 
 def get_previous_review(pull_request_number):
-    """Get previous review with enhanced query"""
+    """FIXED: Get previous review with correct column names"""
     global database_available
     
     if not database_available:
@@ -589,9 +557,6 @@ def get_previous_review(pull_request_number):
         SELECT 
             REVIEW_SUMMARY, 
             DETAILED_FINDINGS_JSON,
-            QUALITY_SCORE,
-            CRITICAL_COUNT,
-            HIGH_COUNT,
             REVIEW_TIMESTAMP
         FROM {current_database}.{current_schema}.CODE_REVIEW_LOG 
         WHERE PULL_REQUEST_NUMBER = {pull_request_number}
@@ -603,11 +568,15 @@ def get_previous_review(pull_request_number):
         
         if result:
             row = result[0]
-            previous_context = f"""Previous Review Summary (Quality: {row['QUALITY_SCORE']}/100, Critical: {row['CRITICAL_COUNT']}, High: {row['HIGH_COUNT']}):
-{row['REVIEW_SUMMARY'][:2000]}
+            # FIXED: Extract from VARIANT columns properly
+            review_summary = json.loads(str(row['REVIEW_SUMMARY'])) if row['REVIEW_SUMMARY'] else {}
+            findings_json = json.loads(str(row['DETAILED_FINDINGS_JSON'])) if row['DETAILED_FINDINGS_JSON'] else []
+            
+            previous_context = f"""Previous Review Summary:
+{json.dumps(review_summary, indent=2)[:2000]}
 
 Previous Findings (sample):
-{row['DETAILED_FINDINGS_JSON'][:1000]}...
+{json.dumps(findings_json, indent=2)[:1000]}...
 """
             print(f"  📋 Retrieved previous review from {row['REVIEW_TIMESTAMP']}")
             return previous_context
