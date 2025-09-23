@@ -11,9 +11,9 @@ MODEL = "openai-gpt-4.1"
 MAX_CHARS_FOR_FINAL_SUMMARY_FILE = 65000
 MAX_TOKENS_FOR_SUMMARY_INPUT = 100000
 
-# Dynamic file pattern - processes all Python files in scripts directory
+# Dynamic file pattern - processes both Python and SQL files in scripts directory
 SCRIPTS_DIRECTORY = "scripts"  # Base directory to scan
-FILE_PATTERN = "*.py"  # Pattern to match Python files
+FILE_PATTERNS = ["*.py", "*.sql"]  # Patterns to match Python and SQL files
 
 # ---------------------
 # Snowflake session
@@ -56,12 +56,12 @@ except Exception as e:
 # ---------------------
 # PROMPT TEMPLATES
 # ---------------------
-PROMPT_TEMPLATE_INDIVIDUAL = """Please act as a principal-level Python code reviewer. Your review must be concise, accurate, and directly actionable, as it will be posted as a GitHub Pull Request comment.
+PROMPT_TEMPLATE_INDIVIDUAL_PYTHON = """Please act as a principal-level Python code reviewer. Your review must be concise, accurate, and directly actionable, as it will be posted as a GitHub Pull Request comment.
 
 ---
 # CONTEXT: HOW TO REVIEW (Apply Silently)
 
-1.  **You are reviewing a code file for executive-level analysis.** Focus on business impact, technical debt, security risks, and maintainability.
+1.  **You are reviewing a Python code file for executive-level analysis.** Focus on business impact, technical debt, security risks, and maintainability.
 2.  **Focus your review on the most critical aspects.** Prioritize findings that have business impact or security implications.
 3.  **Infer context from the full code.** Base your review on the complete file provided.
 4.  **Your entire response MUST be under 65,000 characters.** Include findings of all severities but prioritize Critical and High severity issues.
@@ -124,41 +124,118 @@ Your entire response MUST be under 65,000 characters. Include findings of all se
 *Provide 2-3 high-level, actionable recommendations for improving the overall quality of the codebase based on the findings. Do not repeat the findings themselves.*
 
 ---
-# CODE TO REVIEW
+# PYTHON CODE TO REVIEW
 
-{PY_CONTENT}
+{CODE_CONTENT}
+"""
+
+PROMPT_TEMPLATE_INDIVIDUAL_SQL = """Please act as a principal-level SQL/Database code reviewer. Your review must be concise, accurate, and directly actionable, as it will be posted as a GitHub Pull Request comment.
+
+---
+# CONTEXT: HOW TO REVIEW (Apply Silently)
+
+1.  **You are reviewing a SQL file for executive-level analysis.** Focus on business impact, data integrity risks, performance implications, and maintainability.
+2.  **Focus your review on the most critical aspects.** Prioritize findings that have business impact or data security implications.
+3.  **Infer context from the full SQL code.** Base your review on the complete file provided.
+4.  **Your entire response MUST be under 65,000 characters.** Include findings of all severities but prioritize Critical and High severity issues.
+
+# REVIEW PRIORITIES (Strict Order)
+1.  Data Security & SQL Injection Prevention
+2.  Data Integrity & Correctness
+3.  Performance & Query Optimization
+4.  Readability & Maintainability
+5.  Best Practices & Standards
+
+# SEVERITY GUIDELINES (Be Realistic and Balanced - MOST ISSUES SHOULD BE MEDIUM OR LOW)
+-   **Critical:** ONLY for SQL injection vulnerabilities, data corruption risks, security holes, production outages
+-   **High:** ONLY for significant performance issues, data integrity problems, major security concerns
+-   **Medium:** Query optimization opportunities, maintainability concerns, documentation gaps, minor performance issues
+-   **Low:** Style improvements, minor optimizations, non-critical suggestions, formatting issues
+
+# REALISTIC SEVERITY DISTRIBUTION (MANDATORY):
+- Critical: 0-5% of findings (very rare)
+- High: 10-20% of findings 
+- Medium: 40-50% of findings (most common)
+- Low: 30-40% of findings (common)
+
+# ELIGIBILITY CRITERIA FOR FINDINGS (ALL must be met)
+-   **Evidence:** Quote the exact SQL code snippet and cite the line number.
+-   **Severity:** Assign {Low | Medium | High | Critical} - BE REALISTIC, most issues should be Medium or Low.
+-   **Impact & Action:** Briefly explain the issue and provide a minimal, safe correction.
+-   **Non-trivial:** Skip purely stylistic nits (e.g., capitalization, spacing) that a formatter would catch.
+
+# SQL-SPECIFIC CONSTRAINTS (For accuracy & anti-hallucination)
+-   Do NOT propose SQL functions/syntax that don't exist in the target database system.
+-   Consider database-specific features (Snowflake, PostgreSQL, MySQL, etc.) when making recommendations.
+-   NEVER suggest removing proper parameterization or prepared statements.
+-   If SQL code is already optimized and follows best practices, do NOT invent problems.
+-   DO NOT inflate severity levels - be conservative and realistic.
+-   Consider indexing implications but don't assume index structures without evidence.
+
+---
+# OUTPUT FORMAT (Strict, professional, audit-ready)
+
+Your entire response MUST be under 65,000 characters. Include findings of all severity levels with realistic severity assignments.
+
+## SQL Review Summary
+*A 2-3 sentence high-level summary. Mention the key strengths and the most critical areas for improvement.*
+
+---
+### Detailed Findings
+*A list of all material findings. If no significant issues are found, state "No significant issues found."*
+
+**File:** {filename}
+-   **Severity:** {Critical | High | Medium | Low}
+-   **Line:** {line_number}
+-   **Query/Context:** `{query_name_or_context_if_applicable}`
+-   **Finding:** {A clear, concise description of the issue, its impact, and a recommended correction.}
+
+**(Repeat for each finding)**
+
+---
+### Key Recommendations
+*Provide 2-3 high-level, actionable recommendations for improving the overall quality of the SQL code based on the findings. Do not repeat the findings themselves.*
+
+---
+# SQL CODE TO REVIEW
+
+{CODE_CONTENT}
 """
 
 PROMPT_TEMPLATE_CONSOLIDATED = """
-You are an expert code review summarization engine for executive-level reporting. Your task is to analyze individual code reviews and generate a single, consolidated executive summary with business impact focus.
+You are an expert code review summarization engine for executive-level reporting. Your task is to analyze individual code reviews (both Python and SQL files) and generate a single, consolidated executive summary with business impact focus.
 
 You MUST respond ONLY with a valid JSON object that conforms to the executive schema. Do not include any other text, explanations, or markdown formatting outside of the JSON structure.
 
 Follow these instructions to populate the JSON fields:
 
-1.  **`executive_summary` (string):** Write a 2-3 sentence high-level summary of the entire code change, covering the most important findings across all files with business impact focus.
-2.  **`quality_score` (number):** Assign an overall quality score (0-100) based on severity and number of findings.
+1.  **`executive_summary` (string):** Write a 2-3 sentence high-level summary of the entire code change, covering the most important findings across all files (Python and SQL) with business impact focus.
+2.  **`quality_score` (number):** Assign an overall quality score (0-100) based on severity and number of findings across all file types.
 3.  **`business_impact` (string):** Assess overall business risk as "LOW", "MEDIUM", or "HIGH".
 4.  **`technical_debt_score` (string):** Evaluate technical debt as "LOW", "MEDIUM", or "HIGH".
-5.  **`security_risk_level` (string):** Determine security risk as "LOW", "MEDIUM", "HIGH", or "CRITICAL".
+5.  **`security_risk_level` (string):** Determine security risk as "LOW", "MEDIUM", "HIGH", or "CRITICAL" (consider both code security and data security).
 6.  **`maintainability_rating` (string):** Rate maintainability as "POOR", "FAIR", "GOOD", or "EXCELLENT".
 7.  **`detailed_findings` (array of objects):** Create an array of objects, where each object represents a single, distinct issue found in the code:
          -   **`severity`**: Assign severity realistically: "Low", "Medium", "High", or "Critical". MOST ISSUES SHOULD BE Medium or Low. Only use Critical for security vulnerabilities or data loss risks. Only use High for significant errors or performance issues.
-         -   **`category`**: Assign category: "Security", "Performance", "Maintainability", "Best Practices", "Documentation", or "Error Handling".
+         -   **`category`**: Assign category: "Security", "Performance", "Maintainability", "Best Practices", "Documentation", "Error Handling", "Data Integrity", "SQL Optimization".
          -   **`line_number`**: Extract the specific line number if mentioned in the review. If no line number is available, use "N/A".
-         -   **`function_context`**: From the review text, identify the function or class name where the issue is located. If not applicable, use "global scope".
+         -   **`function_context`**: From the review text, identify the function/query/procedure name where the issue is located. If not applicable, use "global scope".
          -   **`finding`**: Write a clear, concise description of the issue, its potential impact, and a concrete recommendation.
          -   **`business_impact`**: Explain how this affects business operations or risk.
          -   **`recommendation`**: Provide specific technical solution.
          -   **`effort_estimate`**: Estimate effort as "LOW", "MEDIUM", or "HIGH".
          -   **`priority_ranking`**: Assign priority ranking (1 = highest priority).
          -   **`filename`**: The name of the file where the issue was found.
+         -   **`file_type`**: "Python" or "SQL" based on the file extension.
 8.  **`metrics` (object):** Include technical metrics:
          -   **`lines_of_code`**: Total number of lines analyzed across all files.
+         -   **`python_files_count`**: Number of Python files reviewed.
+         -   **`sql_files_count`**: Number of SQL files reviewed.
          -   **`complexity_score`**: "LOW", "MEDIUM", or "HIGH".
          -   **`code_coverage_gaps`**: Array of areas needing test coverage.
          -   **`dependency_risks`**: Array of dependency-related risks.
-9.  **`strategic_recommendations` (array of strings):** Provide 2-3 high-level, actionable recommendations for technical leadership.
+         -   **`data_security_score`**: "LOW", "MEDIUM", "HIGH", or "CRITICAL" for SQL-related data security.
+9.  **`strategic_recommendations` (array of strings):** Provide 2-3 high-level, actionable recommendations for technical leadership covering both application code and data layer.
 10. **`immediate_actions` (array of strings):** List critical items requiring immediate attention.
 11. **`previous_issues_resolved` (array of objects):** For each issue from previous review, indicate status:
          -   **`original_issue`**: Brief description of the previous issue
@@ -173,7 +250,7 @@ Your entire response MUST be under {MAX_CHARS_FOR_FINAL_SUMMARY_FILE} characters
 -   Use "Low" for style improvements and non-critical suggestions
 -   REALISTIC DISTRIBUTION: Expect mostly Medium (40-50%) and Low (30-40%) severity findings, with fewer High (10-20%) and very few Critical (0-5%)
 
-Here are the individual code reviews to process:
+Here are the individual code reviews to process (both Python and SQL files):
 {ALL_REVIEWS_CONTENT}
 """
 
@@ -183,7 +260,7 @@ You are reviewing subsequent commits for Pull Request #{pr_number}.
 PREVIOUS REVIEW SUMMARY AND FINDINGS:
 {previous_context}
 
-CRITICAL INSTRUCTION: You must analyze the new code changes with full awareness of the previous feedback. Specifically:
+CRITICAL INSTRUCTION: You must analyze the new code changes (Python and SQL files) with full awareness of the previous feedback. Specifically:
 1. Check if previous Critical/High severity issues were addressed in the new code
 2. Identify if any previous recommendations were implemented
 3. Note any new issues that may have been introduced
@@ -193,9 +270,19 @@ CRITICAL INSTRUCTION: You must analyze the new code changes with full awareness 
 {consolidated_template}
 """
 
-def get_changed_python_files(folder_path=None):
+def get_file_type(filename):
+    """Determine file type based on extension"""
+    ext = Path(filename).suffix.lower()
+    if ext == '.py':
+        return 'Python'
+    elif ext == '.sql':
+        return 'SQL'
+    else:
+        return 'Unknown'
+
+def get_changed_files(folder_path=None):
     """
-    Dynamically get all Python files from the specified folder or scripts directory.
+    Dynamically get all Python and SQL files from the specified folder or scripts directory.
     Uses wildcard pattern matching for flexibility.
     """
     # If no folder specified, use the scripts directory
@@ -206,25 +293,46 @@ def get_changed_python_files(folder_path=None):
         print(f"❌ Directory {folder_path} not found")
         return []
     
-    # Use glob pattern to find all Python files
-    pattern = os.path.join(folder_path, FILE_PATTERN)
-    py_files = glob.glob(pattern)
+    all_files = []
     
-    # Also check subdirectories recursively
-    recursive_pattern = os.path.join(folder_path, "**", FILE_PATTERN)
-    py_files.extend(glob.glob(recursive_pattern, recursive=True))
+    # Use glob pattern to find all matching files
+    for pattern in FILE_PATTERNS:
+        pattern_path = os.path.join(folder_path, pattern)
+        files = glob.glob(pattern_path)
+        all_files.extend(files)
+        
+        # Also check subdirectories recursively
+        recursive_pattern = os.path.join(folder_path, "**", pattern)
+        files = glob.glob(recursive_pattern, recursive=True)
+        all_files.extend(files)
     
     # Remove duplicates and sort
-    py_files = sorted(list(set(py_files)))
+    all_files = sorted(list(set(all_files)))
     
-    print(f"📁 Found {len(py_files)} Python files in {folder_path} using pattern '{FILE_PATTERN}':")
-    for file in py_files:
-        print(f"  - {file}")
+    python_files = [f for f in all_files if f.endswith('.py')]
+    sql_files = [f for f in all_files if f.endswith('.sql')]
     
-    return py_files
+    print(f"📁 Found {len(all_files)} files in {folder_path}:")
+    print(f"  - Python files: {len(python_files)}")
+    print(f"  - SQL files: {len(sql_files)}")
+    for file in all_files:
+        file_type = get_file_type(file)
+        print(f"  - {file} ({file_type})")
+    
+    return all_files
 
 def build_prompt_for_individual_review(code_text: str, filename: str = "code_file") -> str:
-    prompt = PROMPT_TEMPLATE_INDIVIDUAL.replace("{PY_CONTENT}", code_text)
+    """Build appropriate prompt based on file type"""
+    file_type = get_file_type(filename)
+    
+    if file_type == 'Python':
+        prompt = PROMPT_TEMPLATE_INDIVIDUAL_PYTHON.replace("{CODE_CONTENT}", code_text)
+    elif file_type == 'SQL':
+        prompt = PROMPT_TEMPLATE_INDIVIDUAL_SQL.replace("{CODE_CONTENT}", code_text)
+    else:
+        # Fallback to Python template for unknown types
+        prompt = PROMPT_TEMPLATE_INDIVIDUAL_PYTHON.replace("{CODE_CONTENT}", code_text)
+    
     prompt = prompt.replace("{filename}", filename)
     return prompt
 
@@ -407,6 +515,10 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
     immediate_actions = json_response.get("immediate_actions", [])
     previous_issues = json_response.get("previous_issues_resolved", [])
     
+    # Count files by type
+    python_files = [f for f in processed_files if f.endswith('.py')]
+    sql_files = [f for f in processed_files if f.endswith('.sql')]
+    
     critical_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "CRITICAL")
     high_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "HIGH")
     medium_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "MEDIUM")
@@ -416,7 +528,7 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
     
     display_text = f"""# 📊 Executive Code Review Report
 
-**Files Analyzed:** {len(processed_files)} files | **Analysis Date:** {datetime.now().strftime('%Y-%m-%d')}
+**Files Analyzed:** {len(processed_files)} files ({len(python_files)} Python, {len(sql_files)} SQL) | **Analysis Date:** {datetime.now().strftime('%Y-%m-%d')}
 
 ## 🎯 Executive Summary
 {summary}
@@ -438,6 +550,13 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 | 🟠 High | {high_count} | Fix within sprint |
 | 🟡 Medium | {medium_count} | Plan for next release |
 
+## 📁 File Analysis Breakdown
+
+| File Type | Count | Critical Issues | High Issues |
+|-----------|-------|----------------|-------------|
+| 🐍 Python | {len(python_files)} | {sum(1 for f in findings if str(f.get("severity", "")).upper() == "CRITICAL" and f.get("file_type") == "Python")} | {sum(1 for f in findings if str(f.get("severity", "")).upper() == "HIGH" and f.get("file_type") == "Python")} |
+| 🗃️ SQL | {len(sql_files)} | {sum(1 for f in findings if str(f.get("severity", "")).upper() == "CRITICAL" and f.get("file_type") == "SQL")} | {sum(1 for f in findings if str(f.get("severity", "")).upper() == "HIGH" and f.get("file_type") == "SQL")} |
+
 """
 
     # Add Critical Issues Summary section if there are critical issues
@@ -451,11 +570,14 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
         for i, finding in enumerate(critical_findings, 1):
             line_num = finding.get("line_number", "N/A")
             filename = finding.get("filename", "N/A")
+            file_type = finding.get("file_type", get_file_type(filename))
             issue_desc = finding.get("finding", "No description available")
             business_impact = finding.get("business_impact", "No business impact specified")
             recommendation = finding.get("recommendation", finding.get("finding", "No recommendation available"))
             
-            display_text += f"""**{i}. Critical Issue - Line {line_num}**
+            file_emoji = "🐍" if file_type == "Python" else ("🗃️" if file_type == "SQL" else "📄")
+            
+            display_text += f"""**{i}. Critical Issue - {file_emoji} {file_type} - Line {line_num}**
 - **File:** {filename}
 - **Issue:** {issue_desc}
 - **Business Impact:** {business_impact}
@@ -490,8 +612,8 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
         display_text += """<details>
 <summary><strong>🔍 Current Review Findings</strong> (Click to expand)</summary>
 
-| Priority | File | Line | Issue | Business Impact |
-|----------|------|------|-------|-----------------|
+| Priority | Type | File | Line | Issue | Business Impact |
+|----------|------|------|------|-------|-----------------|
 """
         
         severity_order = {"Critical": 1, "High": 2, "Medium": 3, "Low": 4}
@@ -500,6 +622,7 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
         for finding in sorted_findings[:15]:
             severity = str(finding.get("severity", "Medium"))
             filename = finding.get("filename", "N/A")
+            file_type = finding.get("file_type", get_file_type(filename))
             line = finding.get("line_number", "N/A")
             
             # NO TRUNCATION - show full text
@@ -507,8 +630,9 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
             business_impact_display = str(finding.get("business_impact", ""))
             
             priority_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(severity, "🟡")
+            file_emoji = "🐍" if file_type == "Python" else ("🗃️" if file_type == "SQL" else "📄")
             
-            display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue_display} | {business_impact_display} |\n"
+            display_text += f"| {priority_emoji} {severity} | {file_emoji} {file_type} | {filename} | {line} | {issue_display} | {business_impact_display} |\n"
         
         display_text += "\n</details>\n\n"
 
@@ -534,7 +658,7 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 
 **📋 Review Summary:** {len(findings)} findings identified | **🎯 Quality Score:** {quality_score}/100 | **⚡ Critical Issues:** {critical_count}
 
-*🔬 Powered by Snowflake Cortex AI • Two-Stage Executive Analysis*"""
+*🔬 Powered by Snowflake Cortex AI • Two-Stage Executive Analysis • Python & SQL Support*"""
 
     return display_text
 
@@ -551,18 +675,18 @@ def main():
         
         # ALWAYS use scripts directory regardless of first argument
         print(f"📁 Command line mode: Using {SCRIPTS_DIRECTORY} directory instead of '{sys.argv[1]}'")
-        python_files = get_changed_python_files(SCRIPTS_DIRECTORY)
-        if not python_files:
-            print(f"❌ No Python files found in {SCRIPTS_DIRECTORY} directory using pattern {FILE_PATTERN}")
+        code_files = get_changed_files(SCRIPTS_DIRECTORY)
+        if not code_files:
+            print(f"❌ No Python or SQL files found in {SCRIPTS_DIRECTORY} directory using patterns {FILE_PATTERNS}")
             return
             
         folder_path = SCRIPTS_DIRECTORY  # Always use scripts directory
             
     else:
-        # Fallback for single file mode - use scripts directory with wildcard pattern
-        python_files = get_changed_python_files(SCRIPTS_DIRECTORY)
-        if not python_files:
-            print(f"❌ No Python files found in {SCRIPTS_DIRECTORY} directory using pattern {FILE_PATTERN}")
+        # Fallback for single file mode - use scripts directory with wildcard patterns
+        code_files = get_changed_files(SCRIPTS_DIRECTORY)
+        if not code_files:
+            print(f"❌ No Python or SQL files found in {SCRIPTS_DIRECTORY} directory using patterns {FILE_PATTERNS}")
             return
             
         folder_path = SCRIPTS_DIRECTORY
@@ -570,7 +694,7 @@ def main():
         pull_request_number = 0
         commit_sha = "test"
         directory_mode = False
-        print(f"Running in dynamic pattern mode with {len(python_files)} Python files from {SCRIPTS_DIRECTORY}")
+        print(f"Running in dynamic pattern mode with {len(code_files)} files from {SCRIPTS_DIRECTORY}")
 
     if os.path.exists(output_folder_path):
         import shutil
@@ -583,9 +707,10 @@ def main():
     print("\n🔍 STAGE 1: Individual File Analysis...")
     print("=" * 60)
     
-    for file_path in python_files:
+    for file_path in code_files:
         filename = os.path.basename(file_path)
-        print(f"\n--- Reviewing file: {filename} ---")
+        file_type = get_file_type(filename)
+        print(f"\n--- Reviewing {file_type} file: {filename} ---")
         processed_files.append(filename)
 
         try:
@@ -593,7 +718,7 @@ def main():
                 code_content = f.read()
 
             if not code_content.strip():
-                review_text = "No code found in file, skipping review."
+                review_text = f"No {file_type.lower()} code found in file, skipping review."
             else:
                 chunks = chunk_large_file(code_content)
                 print(f"  File split into {len(chunks)} chunk(s)")
@@ -601,7 +726,7 @@ def main():
                 chunk_reviews = []
                 for i, chunk in enumerate(chunks):
                     chunk_name = f"{filename}_chunk_{i+1}" if len(chunks) > 1 else filename
-                    print(f"  Processing chunk: {chunk_name}")
+                    print(f"  Processing {file_type} chunk: {chunk_name}")
                     
                     individual_prompt = build_prompt_for_individual_review(chunk, chunk_name)
                     review_text = review_with_cortex(MODEL, individual_prompt, session)
@@ -614,6 +739,7 @@ def main():
 
             all_individual_reviews.append({
                 "filename": filename,
+                "file_type": file_type,
                 "review_feedback": review_text
             })
 
@@ -621,12 +747,13 @@ def main():
             output_file_path = os.path.join(output_folder_path, output_filename)
             with open(output_file_path, 'w', encoding='utf-8') as outfile:
                 outfile.write(review_text)
-            print(f"  ✅ Individual review saved: {output_filename}")
+            print(f"  ✅ Individual {file_type} review saved: {output_filename}")
 
         except Exception as e:
             print(f"  ❌ Error processing {filename}: {e}")
             all_individual_reviews.append({
                 "filename": filename,
+                "file_type": file_type,
                 "review_feedback": f"ERROR: Could not generate review. Reason: {e}"
             })
 
@@ -697,6 +824,14 @@ def main():
             rule_based_score = calculate_executive_quality_score(findings, total_lines)
             consolidated_json["quality_score"] = rule_based_score
             
+            # Enhance metrics with file type counts
+            metrics = consolidated_json.get("metrics", {})
+            python_files = [f for f in processed_files if f.endswith('.py')]
+            sql_files = [f for f in processed_files if f.endswith('.sql')]
+            metrics["python_files_count"] = len(python_files)
+            metrics["sql_files_count"] = len(sql_files)
+            consolidated_json["metrics"] = metrics
+            
             print(f"  🎯 Rule-based quality score calculated: {rule_based_score}/100 (overriding LLM score)")
             
         except json.JSONDecodeError as e:
@@ -712,7 +847,11 @@ def main():
                     "detailed_findings": [],
                     "strategic_recommendations": [],
                     "immediate_actions": [],
-                    "previous_issues_resolved": []
+                    "previous_issues_resolved": [],
+                    "metrics": {
+                        "python_files_count": len([f for f in processed_files if f.endswith('.py')]),
+                        "sql_files_count": len([f for f in processed_files if f.endswith('.sql')])
+                    }
                 }
 
         executive_summary = format_executive_pr_display(consolidated_json, processed_files)
@@ -737,6 +876,7 @@ def main():
                 "recommendation": f.get("recommendation", f.get("finding", "")),
                 "severity": f.get("severity", "Critical"),
                 "filename": f.get("filename", "N/A"),
+                "file_type": f.get("file_type", get_file_type(f.get("filename", ""))),
                 "business_impact": f.get("business_impact", "No business impact specified"),
                 "description": f.get("finding", "Critical issue found")  # Add explicit description field
             }
@@ -748,8 +888,10 @@ def main():
             critical_summary = "Critical Issues Summary:\n"
             for i, finding in enumerate(critical_findings, 1):
                 line_num = finding.get("line_number", "N/A")
+                file_type = finding.get("file_type", "Unknown")
                 issue_desc = finding.get("finding", "Critical issue found")
-                critical_summary += f"* **Line {line_num}:** {issue_desc}\n"
+                file_emoji = "🐍" if file_type == "Python" else ("🗃️" if file_type == "SQL" else "📄")
+                critical_summary += f"* **{file_emoji} {file_type} Line {line_num}:** {issue_desc}\n"
 
         review_output_data = {
             "full_review": executive_summary,
@@ -759,6 +901,8 @@ def main():
             "critical_summary": critical_summary,  # Add explicit critical summary
             "critical_count": len(critical_findings),
             "file": processed_files[0] if processed_files else "unknown",
+            "python_files_count": len([f for f in processed_files if f.endswith('.py')]),
+            "sql_files_count": len([f for f in processed_files if f.endswith('.sql')]),
             "timestamp": datetime.now().isoformat()
         }
 
@@ -792,9 +936,12 @@ def main():
                 gh_out.write(f'{delimiter}\n')
             print("  ✅ GitHub Actions output written")
 
+        python_count = len([f for f in processed_files if f.endswith('.py')])
+        sql_count = len([f for f in processed_files if f.endswith('.sql')])
+
         print(f"\n🎉 TWO-STAGE ANALYSIS COMPLETED!")
         print("=" * 60)
-        print(f"📁 Files processed: {len(processed_files)}")
+        print(f"📁 Files processed: {len(processed_files)} ({python_count} Python, {sql_count} SQL)")
         print(f"🔍 Individual reviews: {len(all_individual_reviews)} (PROMPT 1)")
         print(f"📊 Executive summary: 1 (PROMPT 2)")
         print(f"🎯 Quality Score: {consolidated_json.get('quality_score', 'N/A')}/100")
