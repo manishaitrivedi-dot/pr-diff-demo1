@@ -788,6 +788,14 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
     risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}
     quality_emoji = "🟢" if quality_score >= 80 else ("🟡" if quality_score >= 60 else "🔴")
     
+    # SHORTENED Executive Summary - limit to 2 sentences max
+    if len(summary) > 200:
+        sentences = summary.split('. ')
+        if len(sentences) > 2:
+            summary = '. '.join(sentences[:2]) + '.'
+        elif len(summary) > 200:
+            summary = summary[:197] + '...'
+    
     display_text = f"""# 📊 Executive Code Review Report
 
 **Files Analyzed:** {len(processed_files)} files | **Analysis Date:** {datetime.now().strftime('%Y-%m-%d')} | **Database:** {current_database}.{current_schema}
@@ -822,39 +830,7 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 
 """
 
-    # Add Critical Issues Summary section if there are critical issues
-    critical_findings = [f for f in findings if str(f.get("severity", "")).upper() == "CRITICAL"]
-    if critical_findings:
-        display_text += """## 🚨 Critical Issues Summary
-
-**⚠️ IMMEDIATE ACTION REQUIRED** - The following critical issues must be addressed before deployment:
-
-"""
-        for i, finding in enumerate(critical_findings, 1):
-            line_num = finding.get("line_number", "N/A")
-            filename = finding.get("filename", "N/A")
-            issue_desc = finding.get("finding", "No description available")
-            business_impact = finding.get("business_impact", "No business impact specified")
-            recommendation = finding.get("recommendation", finding.get("finding", "No recommendation available"))
-            
-            display_text += f"""**{i}. Critical Issue - Line {line_num}**
-- **File:** {filename}
-- **Issue:** {issue_desc}
-- **Business Impact:** {business_impact}
-- **Required Action:** {recommendation}
-
-"""
-        display_text += """---
-
-"""
-    else:
-        display_text += """## ✅ Critical Issues Summary
-
-**No critical security issues found.** This indicates good security practices in the codebase.
-
----
-
-"""
+    # REMOVED: Critical Issues Summary section entirely
 
     # ENHANCED: Previous issues resolution status WITH LINE NUMBERS
     if previous_issues:
@@ -901,14 +877,7 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
         
         display_text += "\n</details>\n\n"
 
-    if strategic_recs:
-        display_text += """<details>
-<summary><strong>🎯 Strategic Recommendations</strong> (Click to expand)</summary>
-
-"""
-        for i, rec in enumerate(strategic_recs, 1):
-            display_text += f"{i}. {rec}\n"
-        display_text += "\n</details>\n\n"
+    # REMOVED: Strategic Recommendations section entirely
 
     if immediate_actions:
         display_text += """<details>
@@ -1156,14 +1125,14 @@ def main():
             }
             criticals.append(critical)
 
-        # Create a proper critical issues summary for inline_comment.py
+        # Create a proper critical issues summary for inline_comment.py with CUSTOM FORMAT
         critical_summary = ""
         if critical_findings:
             critical_summary = "Critical Issues Summary:\n"
             for i, finding in enumerate(critical_findings, 1):
                 line_num = finding.get("line_number", "N/A")
-                issue_desc = finding.get("finding", "Critical issue found")
-                critical_summary += f"* **Line {line_num}:** {issue_desc}\n"
+                # CUSTOM FORMAT: "Critical issues are also posted as inline comments on X line"
+                critical_summary += f"* **Line {line_num}:** Critical issues are also posted as inline comments on {line_num} line\n"
 
         # IMPORTANT: Generate this BEFORE the LLM comparison stage so it's always available
         review_output_data = {
