@@ -196,7 +196,7 @@ You MUST respond ONLY with a valid JSON object that conforms to the executive sc
 
 Follow these instructions to populate the JSON fields:
 
-1.  **`executive_summary` (string):** Write a 2-3 sentence high-level summary of the entire code change, covering the most important findings across all files with business impact focus.
+1.  **`executive_summary` (string):** Write a SHORT 1-2 sentence summary of the most critical findings only.
 2.  **`quality_score` (number):** Assign an overall quality score (0-100) based on severity and number of findings.
 3.  **`business_impact` (string):** Assess overall business risk as "LOW", "MEDIUM", or "HIGH".
 4.  **`technical_debt_score` (string):** Evaluate technical debt as "LOW", "MEDIUM", or "HIGH".
@@ -218,9 +218,8 @@ Follow these instructions to populate the JSON fields:
          -   **`complexity_score`**: "LOW", "MEDIUM", or "HIGH".
          -   **`code_coverage_gaps`**: Array of areas needing test coverage.
          -   **`dependency_risks`**: Array of dependency-related risks.
-9.  **`strategic_recommendations` (array of strings):** Provide 2-3 high-level, actionable recommendations for technical leadership.
-10. **`immediate_actions` (array of strings):** List critical items requiring immediate attention. Should be very few items.
-11. **`previous_issues_resolved` (array of objects):** For each issue from previous review, indicate status:
+9.  **`immediate_actions` (array of strings):** List critical items requiring immediate attention. Should be very few items.
+10. **`previous_issues_resolved` (array of objects):** For each issue from previous review, indicate status:
          -   **`original_issue`**: Brief description of the previous issue
          -   **`status`**: "RESOLVED", "PARTIALLY_RESOLVED", "NOT_ADDRESSED", or "WORSENED"
          -   **`details`**: Explanation of current status
@@ -602,7 +601,6 @@ def format_executive_pr_display(json_response: dict, processed_files: list, has_
     tech_debt = json_response.get("technical_debt_score", "MEDIUM")
     maintainability = json_response.get("maintainability_rating", "FAIR")
     metrics = json_response.get("metrics", {})
-    strategic_recs = json_response.get("strategic_recommendations", [])
     immediate_actions = json_response.get("immediate_actions", [])
     previous_issues = json_response.get("previous_issues_resolved", [])
     
@@ -718,14 +716,7 @@ def format_executive_pr_display(json_response: dict, processed_files: list, has_
         
         display_text += "\n</details>\n\n"
 
-    if strategic_recs:
-        display_text += """<details>
-<summary><strong>🎯 Strategic Recommendations</strong> (Click to expand)</summary>
-
-"""
-        for i, rec in enumerate(strategic_recs, 1):
-            display_text += f"{i}. {rec}\n"
-        display_text += "\n</details>\n\n"
+    # REMOVED: Strategic recommendations section completely removed
 
     if immediate_actions:
         display_text += """<details>
@@ -901,7 +892,6 @@ def main():
                     "quality_score": 75,
                     "business_impact": "MEDIUM",
                     "detailed_findings": [],
-                    "strategic_recommendations": [],
                     "immediate_actions": [],
                     "previous_issues_resolved": []
                 }
@@ -922,7 +912,7 @@ def main():
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(consolidated_json, f, indent=2)
 
-        # Generate review_output.json for inline_comment.py compatibility
+        # Generate review_output.json for inline_comment.py compatibility - MODIFIED to remove critical summary
         criticals = []
         critical_findings = [f for f in consolidated_json.get("detailed_findings", []) if str(f.get("severity", "")).upper() == "CRITICAL"]
         
@@ -938,21 +928,15 @@ def main():
             }
             criticals.append(critical)
 
-        # Create a proper critical issues summary for inline_comment.py
-        critical_summary = ""
-        if critical_findings:
-            critical_summary = "Critical Issues Summary:\n"
-            for i, finding in enumerate(critical_findings, 1):
-                line_num = finding.get("line_number", "N/A")
-                issue_desc = finding.get("finding", "Critical issue found")
-                critical_summary += f"* **Line {line_num}:** {issue_desc}\n"
+        # REMOVED: Critical issues summary - no longer created
+        critical_summary = ""  # Empty string instead of generating summary
 
         review_output_data = {
             "full_review": executive_summary,
             "full_review_markdown": executive_summary,
             "full_review_json": consolidated_json,
             "criticals": criticals,
-            "critical_summary": critical_summary,
+            "critical_summary": critical_summary,  # Empty string
             "critical_count": len(critical_findings),
             "file": processed_files[0] if processed_files else "unknown",
             "timestamp": datetime.now().isoformat()
@@ -1021,10 +1005,10 @@ Executive consolidation encountered an error but individual reviews are availabl
                 "quality_score": 50,
                 "business_impact": "MEDIUM",
                 "detailed_findings": [],
-                "strategic_recommendations": ["Review individual file reports for detailed findings"],
                 "immediate_actions": ["Check consolidation errors in logs"]
             },
             "criticals": [],
+            "critical_summary": "",  # Empty string
             "file": processed_files[0] if processed_files else "unknown",
             "timestamp": datetime.now().isoformat(),
             "status": "fallback_mode"
