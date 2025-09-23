@@ -454,7 +454,7 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
             print(f"    ⚠️ UNRECOGNIZED SEVERITY: '{severity}' in finding: {finding.get('finding', 'Unknown')[:50]}... - SKIPPING")
             continue  # Skip this finding entirely instead of converting
             
-        print(f"    - {severity}: {finding.get('finding', 'No description')[:50]}...")
+        print(f"    - {severity}: {finding.get('finding', 'Inline comments on specific lines where critical issues are posted are also')[:50]}...")
         
         # Count affected lines (treat N/A as 1 line)
         line_num = finding.get("line_number", "N/A")
