@@ -29,29 +29,72 @@ cfg = {
 }
 session = Session.builder.configs(cfg).create()
 
-# FIX DATABASE PERMISSIONS: Try different approaches
+# FIX DATABASE PERMISSIONS AND SETUP: Enhanced approach
 database_available = False
-try:
-    session.sql("USE ROLE SYSADMIN").collect()
-    session.sql("USE DATABASE MY_DB").collect()
-    session.sql("USE SCHEMA PUBLIC").collect()
-    print("✅ Database context set: MY_DB.PUBLIC with SYSADMIN")
-    database_available = True
-except Exception as e:
-    print(f"⚠️ Warning: SYSADMIN failed: {e}")
-    # Try creating our own schema with full permissions
+current_database = None
+current_schema = None
+
+def setup_database_with_fallback():
+    """Setup database with multiple fallback strategies"""
+    global database_available, current_database, current_schema
+    
+    print("🔧 Setting up database for review logging...")
+    
+    # Strategy 1: Try original database with ACCOUNTADMIN
+    try:
+        session.sql("USE ROLE ACCOUNTADMIN").collect()
+        session.sql("GRANT USAGE ON DATABASE MY_DB TO ROLE SYSADMIN").collect()
+        session.sql("GRANT USAGE ON SCHEMA MY_DB.PUBLIC TO ROLE SYSADMIN").collect()
+        session.sql("GRANT CREATE TABLE ON SCHEMA MY_DB.PUBLIC TO ROLE SYSADMIN").collect()
+        session.sql("GRANT INSERT ON ALL TABLES IN SCHEMA MY_DB.PUBLIC TO ROLE SYSADMIN").collect()
+        session.sql("USE ROLE SYSADMIN").collect()
+        session.sql("USE DATABASE MY_DB").collect()
+        session.sql("USE SCHEMA PUBLIC").collect()
+        current_database = "MY_DB"
+        current_schema = "PUBLIC"
+        print("✅ Strategy 1: Successfully granted permissions and using MY_DB.PUBLIC")
+        database_available = True
+        return True
+    except Exception as e:
+        print(f"⚠️ Strategy 1 failed: {e}")
+
+    # Strategy 2: Create our own database as SYSADMIN
     try:
         session.sql("USE ROLE SYSADMIN").collect()
-        session.sql("CREATE DATABASE IF NOT EXISTS REVIEW_DB").collect()
-        session.sql("USE DATABASE REVIEW_DB").collect()
+        session.sql("CREATE DATABASE IF NOT EXISTS CODE_REVIEWS").collect()
+        session.sql("USE DATABASE CODE_REVIEWS").collect()
         session.sql("CREATE SCHEMA IF NOT EXISTS REVIEWS").collect()
         session.sql("USE SCHEMA REVIEWS").collect()
-        print("✅ Created and using REVIEW_DB.REVIEWS")
+        current_database = "CODE_REVIEWS"
+        current_schema = "REVIEWS"
+        print("✅ Strategy 2: Successfully created and using CODE_REVIEWS.REVIEWS")
         database_available = True
-    except Exception as e2:
-        print(f"⚠️ Warning: Schema creation failed: {e2}")
-        print("⚠️ Continuing without database logging - previous reviews won't work")
-        database_available = False
+        return True
+    except Exception as e:
+        print(f"⚠️ Strategy 2 failed: {e}")
+
+    # Strategy 3: Try user's personal database
+    try:
+        session.sql("USE ROLE SYSADMIN").collect()
+        user_db = f"DB_{cfg['user']}"
+        session.sql(f"CREATE DATABASE IF NOT EXISTS {user_db}").collect()
+        session.sql(f"USE DATABASE {user_db}").collect()
+        session.sql("CREATE SCHEMA IF NOT EXISTS LOGS").collect()
+        session.sql("USE SCHEMA LOGS").collect()
+        current_database = user_db
+        current_schema = "LOGS"
+        print(f"✅ Strategy 3: Successfully created and using {user_db}.LOGS")
+        database_available = True
+        return True
+    except Exception as e:
+        print(f"⚠️ Strategy 3 failed: {e}")
+
+    print("❌ All database strategies failed - continuing without logging")
+    database_available = False
+    return False
+
+# Setup database
+setup_database_with_fallback()
 
 # ---------------------
 # PROMPT TEMPLATES
@@ -424,6 +467,158 @@ def calculate_executive_quality_score(findings: list, total_lines_of_code: int) 
     else:
         return max(30, final_score)  # Poor - but never below 30 for functional code
 
+def setup_review_log_table():
+    """Setup the review log table with correct data types"""
+    global database_available
+    
+    if not database_available:
+        return False
+        
+    try:
+        # Create table with correct data types - FIXED: DETAILED_FINDINGS as TEXT, not VARIANT
+        create_table_query = f"""
+        CREATE TABLE IF NOT EXISTS {current_database}.{current_schema}.CODE_REVIEW_LOG (
+            REVIEW_ID INTEGER AUTOINCREMENT START 1 INCREMENT 1 PRIMARY KEY,
+            PULL_REQUEST_NUMBER INTEGER,
+            COMMIT_SHA VARCHAR(40),
+            REVIEW_SUMMARY TEXT,
+            DETAILED_FINDINGS_JSON TEXT,
+            FILES_PROCESSED ARRAY,
+            QUALITY_SCORE INTEGER,
+            CRITICAL_COUNT INTEGER,
+            HIGH_COUNT INTEGER,
+            MEDIUM_COUNT INTEGER,
+            LOW_COUNT INTEGER,
+            BUSINESS_IMPACT VARCHAR(10),
+            SECURITY_RISK_LEVEL VARCHAR(10),
+            REVIEW_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+        );
+        """
+        session.sql(create_table_query).collect()
+        print(f"✅ Review log table created/verified in {current_database}.{current_schema}")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to create review log table: {e}")
+        return False
+
+def store_review_log(pull_request_number, commit_sha, executive_summary, consolidated_json, processed_files):
+    """Store review with enhanced metadata"""
+    global database_available
+    
+    if not database_available:
+        print("  ⚠️ Database not available - cannot store review")
+        return False
+        
+    try:
+        findings = consolidated_json.get("detailed_findings", [])
+        
+        # Count by severity
+        critical_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "CRITICAL")
+        high_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "HIGH")
+        medium_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "MEDIUM")
+        low_count = sum(1 for f in findings if str(f.get("severity", "")).upper() == "LOW")
+        
+        # FIXED: Use parameterized query with correct data types
+        insert_sql = f"""
+        INSERT INTO {current_database}.{current_schema}.CODE_REVIEW_LOG (
+            PULL_REQUEST_NUMBER, 
+            COMMIT_SHA, 
+            REVIEW_SUMMARY, 
+            DETAILED_FINDINGS_JSON,
+            FILES_PROCESSED,
+            QUALITY_SCORE,
+            CRITICAL_COUNT,
+            HIGH_COUNT,
+            MEDIUM_COUNT,
+            LOW_COUNT,
+            BUSINESS_IMPACT,
+            SECURITY_RISK_LEVEL
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        
+        params = [
+            pull_request_number,
+            commit_sha,
+            executive_summary[:8000],  # Truncate for storage
+            json.dumps(findings),  # Store as JSON string, not VARIANT
+            processed_files,  # Array of filenames
+            consolidated_json.get("quality_score", 75),
+            critical_count,
+            high_count,
+            medium_count,
+            low_count,
+            consolidated_json.get("business_impact", "MEDIUM"),
+            consolidated_json.get("security_risk_level", "MEDIUM")
+        ]
+        
+        session.sql(insert_sql, params=params).collect()
+        print(f"  ✅ Review stored successfully in {current_database}.{current_schema}.CODE_REVIEW_LOG")
+        
+        # Verify the insert worked
+        verify_query = f"""
+        SELECT REVIEW_ID, PULL_REQUEST_NUMBER, COMMIT_SHA, QUALITY_SCORE, CRITICAL_COUNT, HIGH_COUNT 
+        FROM {current_database}.{current_schema}.CODE_REVIEW_LOG 
+        WHERE PULL_REQUEST_NUMBER = {pull_request_number} AND COMMIT_SHA = '{commit_sha}'
+        ORDER BY REVIEW_TIMESTAMP DESC LIMIT 1
+        """
+        result = session.sql(verify_query).collect()
+        
+        if result:
+            row = result[0]
+            print(f"  📋 Verified: Review ID {row['REVIEW_ID']}, Quality: {row['QUALITY_SCORE']}, Critical: {row['CRITICAL_COUNT']}, High: {row['HIGH_COUNT']}")
+        else:
+            print("  ⚠️ Warning: Could not verify review was stored")
+            
+        return True
+        
+    except Exception as e:
+        print(f"  ❌ Failed to store review: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def get_previous_review(pull_request_number):
+    """Get previous review with enhanced query"""
+    global database_available
+    
+    if not database_available:
+        return None
+        
+    try:
+        query = f"""
+        SELECT 
+            REVIEW_SUMMARY, 
+            DETAILED_FINDINGS_JSON,
+            QUALITY_SCORE,
+            CRITICAL_COUNT,
+            HIGH_COUNT,
+            REVIEW_TIMESTAMP
+        FROM {current_database}.{current_schema}.CODE_REVIEW_LOG 
+        WHERE PULL_REQUEST_NUMBER = {pull_request_number}
+        ORDER BY REVIEW_TIMESTAMP DESC 
+        LIMIT 1
+        """
+        
+        result = session.sql(query).collect()
+        
+        if result:
+            row = result[0]
+            previous_context = f"""Previous Review Summary (Quality: {row['QUALITY_SCORE']}/100, Critical: {row['CRITICAL_COUNT']}, High: {row['HIGH_COUNT']}):
+{row['REVIEW_SUMMARY'][:2000]}
+
+Previous Findings (sample):
+{row['DETAILED_FINDINGS_JSON'][:1000]}...
+"""
+            print(f"  📋 Retrieved previous review from {row['REVIEW_TIMESTAMP']}")
+            return previous_context
+        else:
+            print("  📋 No previous review found for this PR")
+            return None
+            
+    except Exception as e:
+        print(f"  ⚠️ Error retrieving previous review: {e}")
+        return None
+
 def format_executive_pr_display(json_response: dict, processed_files: list) -> str:
     summary = json_response.get("executive_summary", "Technical analysis completed")
     findings = json_response.get("detailed_findings", [])
@@ -457,7 +652,7 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
     
     display_text = f"""# 📊 Executive Code Review Report
 
-**Files Analyzed:** {len(processed_files)} files | **Analysis Date:** {datetime.now().strftime('%Y-%m-%d')}
+**Files Analyzed:** {len(processed_files)} files | **Analysis Date:** {datetime.now().strftime('%Y-%m-%d')} | **Database:** {current_database}.{current_schema}
 
 ## 🎯 Executive Summary
 {summary}
@@ -589,7 +784,7 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 
 **📋 Review Summary:** {len(findings)} findings identified | **🎯 Quality Score:** {quality_score}/100 | **⚡ Critical Issues:** {critical_count}
 
-*🔬 Powered by Snowflake Cortex AI • Two-Stage Executive Analysis*"""
+*🔬 Powered by Snowflake Cortex AI • Two-Stage Executive Analysis • Stored in {current_database}.{current_schema}*"""
 
     return display_text
 
@@ -694,38 +889,18 @@ def main():
         return
 
     try:
-        # CRITICAL: Retrieve previous review context BEFORE generating new review
+        # Setup the review log table
+        if database_available:
+            setup_review_log_table()
+
+        # Get previous review context if available
         previous_review_context = None
         if pull_request_number and pull_request_number != 0 and database_available:
-            try:
-                create_table_query = """
-                CREATE TABLE IF NOT EXISTS CODE_REVIEW_LOG (
-                    REVIEW_ID INTEGER AUTOINCREMENT START 1 INCREMENT 1,
-                    PULL_REQUEST_NUMBER INTEGER,
-                    COMMIT_SHA VARCHAR(40),
-                    REVIEW_SUMMARY TEXT,
-                    DETAILED_FINDINGS TEXT,
-                    REVIEW_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-                );
-                """
-                session.sql(create_table_query).collect()
-                
-                query = f"""
-                    SELECT REVIEW_SUMMARY, DETAILED_FINDINGS FROM CODE_REVIEW_LOG 
-                    WHERE PULL_REQUEST_NUMBER = {pull_request_number}
-                    ORDER BY REVIEW_TIMESTAMP DESC 
-                    LIMIT 1
-                """
-                result = session.sql(query).collect()
-                
-                if result:
-                    previous_review_context = result[0]["REVIEW_SUMMARY"][:3000]  # Truncate for prompt
-                    print("  📋 Retrieved previous review context - this is a subsequent commit review")
-                else:
-                    print("  📋 No previous review found - this is the initial commit review")
-                    
-            except Exception as e:
-                print(f"  Warning: Could not retrieve previous review: {e}")
+            previous_review_context = get_previous_review(pull_request_number)
+            if previous_review_context:
+                print("  📋 This is a subsequent commit review with previous context")
+            else:
+                print("  📋 This is the initial commit review")
         elif not database_available:
             print("  ⚠️ Database not available - cannot retrieve previous reviews")
 
@@ -821,23 +996,9 @@ def main():
             json.dump(review_output_data, f, indent=2, ensure_ascii=False)
         print("  ✅ review_output.json saved for inline_comment.py compatibility")
 
-        # Store current review for future comparisons - FIXED SQL
+        # Store current review for future comparisons - FIXED
         if pull_request_number and pull_request_number != 0 and database_available:
-            try:
-                insert_sql = """
-                    INSERT INTO CODE_REVIEW_LOG (PULL_REQUEST_NUMBER, COMMIT_SHA, REVIEW_SUMMARY, DETAILED_FINDINGS)
-                    VALUES (?, ?, ?, ?)
-                """
-                params = [
-                    pull_request_number, 
-                    commit_sha, 
-                    executive_summary[:8000],  # Truncate for storage
-                    json.dumps(consolidated_json.get("detailed_findings", []))
-                ]
-                session.sql(insert_sql, params=params).collect()
-                print(f"  ✅ Current review stored for future comparisons")
-            except Exception as e:
-                print(f"  Warning: Could not store review: {e}")
+            store_review_log(pull_request_number, commit_sha, executive_summary, consolidated_json, processed_files)
 
         if 'GITHUB_OUTPUT' in os.environ:
             delimiter = str(uuid.uuid4())
@@ -858,6 +1019,11 @@ def main():
             print(f"🔄 Previous context included: ✅ Subsequent commit review")
         else:
             print(f"🔄 Previous context: ❌ Initial commit review")
+        
+        if database_available:
+            print(f"💾 Database logging: ✅ Stored in {current_database}.{current_schema}")
+        else:
+            print(f"💾 Database logging: ❌ Not available")
         
     except Exception as e:
         print(f"❌ Consolidation error: {e}")
