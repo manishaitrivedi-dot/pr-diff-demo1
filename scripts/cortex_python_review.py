@@ -593,7 +593,7 @@ Previous Findings (sample):
         print(f"  ⚠️ Error retrieving previous review: {e}")
         return None
 
-def format_executive_pr_display(json_response: dict, processed_files: list) -> str:
+def format_executive_pr_display(json_response: dict, processed_files: list, has_previous_context: bool = False) -> str:
     summary = json_response.get("executive_summary", "Technical analysis completed")
     findings = json_response.get("detailed_findings", [])
     quality_score = json_response.get("quality_score", 75)
@@ -658,40 +658,6 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
 
 """
 
-    # Add Critical Issues Summary section if there are critical issues
-    critical_findings = [f for f in findings if str(f.get("severity", "")).upper() == "CRITICAL"]
-    if critical_findings:
-        display_text += """## 🚨 Critical Issues Summary
-
-**⚠️ IMMEDIATE ACTION REQUIRED** - The following critical issues must be addressed before deployment:
-
-"""
-        for i, finding in enumerate(critical_findings, 1):
-            line_num = finding.get("line_number", "N/A")
-            filename = finding.get("filename", "N/A")
-            issue_desc = finding.get("finding", "No description available")
-            business_impact = finding.get("business_impact", "No business impact specified")
-            recommendation = finding.get("recommendation", finding.get("finding", "No recommendation available"))
-            
-            display_text += f"""**{i}. Critical Issue - Line {line_num}**
-- **File:** {filename}
-- **Issue:** {issue_desc}
-- **Business Impact:** {business_impact}
-- **Required Action:** {recommendation}
-
-"""
-        display_text += """---
-
-"""
-    else:
-        display_text += """## ✅ Critical Issues Summary
-
-**No critical security issues found.** This indicates good security practices in the codebase.
-
----
-
-"""
-
     # Previous issues resolution status
     if previous_issues:
         display_text += """<details>
@@ -711,11 +677,20 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
         
         display_text += "\n</details>\n\n"
 
+    # Enhanced findings table with context-aware Previous Issue/Status columns
     if findings:
         display_text += """<details>
 <summary><strong>🔍 Current Review Findings</strong> (Click to expand)</summary>
 
-| Priority | File | Line | Issue | Business Impact |
+"""
+        
+        # Conditionally show Previous Issue and Status columns based on context
+        if has_previous_context:
+            display_text += """| Priority | File | Line | Issue | Business Impact | Previous Issue | Status |
+|----------|------|------|-------|-----------------|----------------|--------|
+"""
+        else:
+            display_text += """| Priority | File | Line | Issue | Business Impact |
 |----------|------|------|-------|-----------------|
 """
         
@@ -732,7 +707,14 @@ def format_executive_pr_display(json_response: dict, processed_files: list) -> s
             
             priority_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(severity, "🟡")
             
-            display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue_display} | {business_impact_display} |\n"
+            if has_previous_context:
+                # Get LLM-determined previous issue tracking data (only if we have previous context)
+                is_previous = finding.get("is_previous_issue", "No")  # LLM populates this
+                resolution_status = finding.get("resolution_status", "New")  # LLM populates this
+                display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue_display} | {business_impact_display} | {is_previous} | {resolution_status} |\n"
+            else:
+                # No previous context available - don't show tracking columns
+                display_text += f"| {priority_emoji} {severity} | {filename} | {line} | {issue_display} | {business_impact_display} |\n"
         
         display_text += "\n</details>\n\n"
 
@@ -869,14 +851,19 @@ def main():
 
         # Get previous review context if available
         previous_review_context = None
+        has_previous_context = False  # Track whether we actually have previous context
+        
         if pull_request_number and pull_request_number != 0 and database_available:
             previous_review_context = get_previous_review(pull_request_number)
             if previous_review_context:
                 print("  📋 This is a subsequent commit review with previous context")
+                has_previous_context = True
             else:
                 print("  📋 This is the initial commit review")
+                has_previous_context = False
         elif not database_available:
             print("  ⚠️ Database not available - cannot retrieve previous reviews")
+            has_previous_context = False
 
         combined_reviews_json = json.dumps(all_individual_reviews, indent=2)
         print(f"  Combined reviews: {len(combined_reviews_json)} characters")
@@ -919,7 +906,12 @@ def main():
                     "previous_issues_resolved": []
                 }
 
-        executive_summary = format_executive_pr_display(consolidated_json, processed_files)
+        # PASS has_previous_context to the display function
+        executive_summary = format_executive_pr_display(
+            consolidated_json, 
+            processed_files, 
+            has_previous_context  # New parameter to control column display
+        )
         
         consolidated_path = os.path.join(output_folder_path, "consolidated_executive_summary.md")
         with open(consolidated_path, 'w', encoding='utf-8') as f:
@@ -989,7 +981,7 @@ def main():
         print(f"📊 Executive summary: 1 (PROMPT 2)")
         print(f"🎯 Quality Score: {consolidated_json.get('quality_score', 'N/A')}/100")
         print(f"📈 Findings: {len(consolidated_json.get('detailed_findings', []))}")
-        if previous_review_context:
+        if has_previous_context:
             print(f"🔄 Previous context included: ✅ Subsequent commit review")
         else:
             print(f"🔄 Previous context: ❌ Initial commit review")
@@ -1003,6 +995,44 @@ def main():
         print(f"❌ Consolidation error: {e}")
         import traceback
         traceback.print_exc()
+
+        # FALLBACK: Create basic review_output.json even if consolidation fails
+        fallback_summary = f"""# 📊 Code Review Report (Fallback Mode)
+
+**Files Analyzed:** {len(processed_files)} files | **Analysis Date:** {datetime.now().strftime('%Y-%m-%d')}
+
+## ⚠️ Review Status
+Technical analysis completed with {len(all_individual_reviews)} individual file reviews.
+Executive consolidation encountered an error but individual reviews are available.
+
+**Files Processed:**
+"""
+        for i, file in enumerate(processed_files, 1):
+            fallback_summary += f"{i}. {file}\n"
+
+        fallback_summary += "\n*Individual file reviews available in output folder.*"
+
+        # Create fallback review_output.json
+        fallback_data = {
+            "full_review": fallback_summary,
+            "full_review_markdown": fallback_summary,
+            "full_review_json": {
+                "executive_summary": "Review completed with errors during consolidation",
+                "quality_score": 50,
+                "business_impact": "MEDIUM",
+                "detailed_findings": [],
+                "strategic_recommendations": ["Review individual file reports for detailed findings"],
+                "immediate_actions": ["Check consolidation errors in logs"]
+            },
+            "criticals": [],
+            "file": processed_files[0] if processed_files else "unknown",
+            "timestamp": datetime.now().isoformat(),
+            "status": "fallback_mode"
+        }
+
+        with open("review_output.json", "w", encoding='utf-8') as f:
+            json.dump(fallback_data, f, indent=2, ensure_ascii=False)
+        print("  ⚠️ Fallback review_output.json created for inline_comment.py compatibility")
 
 if __name__ == "__main__":
     try:
