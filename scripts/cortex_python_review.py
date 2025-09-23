@@ -1059,30 +1059,75 @@ def main():
             consolidated_json = json.loads(consolidated_raw)
             print("  ✅ Successfully parsed consolidated JSON response")
             
-            # OVERRIDE: Calculate rule-based quality score (don't trust LLM for this)
-            findings = consolidated_json.get("detailed_findings", [])
-            total_lines = sum(len(review.get("review_feedback", "").split('\n')) for review in all_individual_reviews)
-            
-            rule_based_score = calculate_executive_quality_score(findings, total_lines)
-            consolidated_json["quality_score"] = rule_based_score
-            
-            print(f"  🎯 Rule-based quality score calculated: {rule_based_score}/100 (overriding LLM score)")
-            
         except json.JSONDecodeError as e:
             print(f"  ⚠️ JSON parsing failed: {e}")
-            json_match = re.search(r'\{.*\}', consolidated_raw, re.DOTALL)
-            if json_match:
-                consolidated_json = json.loads(json_match.group())
-            else:
+            print(f"  📝 Raw response preview: {consolidated_raw[:500]}...")
+            
+            # ENHANCED: Multiple JSON extraction strategies
+            consolidated_json = None
+            
+            # Strategy 1: Find JSON between ```json and ```
+            json_code_match = re.search(r'```json\s*(\{.*?\})\s*```', consolidated_raw, re.DOTALL)
+            if json_code_match:
+                try:
+                    consolidated_json = json.loads(json_code_match.group(1))
+                    print("  ✅ Successfully extracted JSON from code block")
+                except json.JSONDecodeError:
+                    pass
+            
+            # Strategy 2: Find largest JSON-like structure
+            if not consolidated_json:
+                json_matches = re.findall(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', consolidated_raw, re.DOTALL)
+                for match in sorted(json_matches, key=len, reverse=True):
+                    try:
+                        consolidated_json = json.loads(match)
+                        print("  ✅ Successfully extracted JSON using pattern matching")
+                        break
+                    except json.JSONDecodeError:
+                        continue
+            
+            # Strategy 3: Clean and fix common JSON issues
+            if not consolidated_json:
+                try:
+                    # Common fixes for malformed JSON
+                    cleaned_json = consolidated_raw
+                    # Fix trailing commas
+                    cleaned_json = re.sub(r',(\s*[}\]])', r'\1', cleaned_json)
+                    # Fix unquoted keys (basic cases)
+                    cleaned_json = re.sub(r'(\w+):', r'"\1":', cleaned_json)
+                    # Extract first complete JSON object
+                    json_match = re.search(r'\{.*\}', cleaned_json, re.DOTALL)
+                    if json_match:
+                        consolidated_json = json.loads(json_match.group())
+                        print("  ✅ Successfully parsed cleaned JSON")
+                except json.JSONDecodeError:
+                    pass
+            
+            # Strategy 4: Fallback with basic structure
+            if not consolidated_json:
+                print("  ❌ All JSON parsing strategies failed, using fallback")
                 consolidated_json = {
-                    "executive_summary": "Consolidation failed - using fallback",
+                    "executive_summary": "JSON parsing failed - analysis completed with " + str(len(all_individual_reviews)) + " files reviewed",
                     "quality_score": 75,
-                    "business_impact": "MEDIUM",
+                    "business_impact": "MEDIUM", 
+                    "technical_debt_score": "MEDIUM",
+                    "security_risk_level": "MEDIUM",
+                    "maintainability_rating": "FAIR",
                     "detailed_findings": [],
-                    "strategic_recommendations": [],
-                    "immediate_actions": [],
+                    "metrics": {"lines_of_code": 0, "complexity_score": "MEDIUM", "code_coverage_gaps": [], "dependency_risks": []},
+                    "strategic_recommendations": ["Review LLM output formatting", "Implement JSON validation"],
+                    "immediate_actions": ["Fix JSON parsing issues"],
                     "previous_issues_resolved": []
                 }
+        
+        # ALWAYS calculate rule-based quality score
+        findings = consolidated_json.get("detailed_findings", [])
+        total_lines = sum(len(review.get("review_feedback", "").split('\n')) for review in all_individual_reviews)
+        
+        rule_based_score = calculate_executive_quality_score(findings, total_lines)
+        consolidated_json["quality_score"] = rule_based_score
+        
+        print(f"  🎯 Rule-based quality score calculated: {rule_based_score}/100 (overriding LLM score)")
 
         executive_summary = format_executive_pr_display(consolidated_json, processed_files)
         
@@ -1095,10 +1140,10 @@ def main():
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(consolidated_json, f, indent=2)
 
-        # Generate review_output.json for inline_comment.py compatibility
-        criticals = []
+        # Generate review_output.json for inline_comment.py compatibility - MOVED AFTER comparison
         critical_findings = [f for f in consolidated_json.get("detailed_findings", []) if str(f.get("severity", "")).upper() == "CRITICAL"]
         
+        criticals = []
         for f in critical_findings:
             critical = {
                 "line": f.get("line_number", "N/A"),
@@ -1120,6 +1165,7 @@ def main():
                 issue_desc = finding.get("finding", "Critical issue found")
                 critical_summary += f"* **Line {line_num}:** {issue_desc}\n"
 
+        # IMPORTANT: Generate this BEFORE the LLM comparison stage so it's always available
         review_output_data = {
             "full_review": executive_summary,
             "full_review_markdown": executive_summary,
@@ -1188,7 +1234,11 @@ def main():
                         with open(json_path, 'w', encoding='utf-8') as f:
                             json.dump(consolidated_json, f, indent=2)
                         
-                        print("✅ Updated executive summary and JSON files with comparison results")
+                        # IMPORTANT: Also update the review_output.json for inline_comment.py compatibility
+                        with open("review_output.json", "w", encoding='utf-8') as f:
+                            json.dump(review_output_data, f, indent=2, ensure_ascii=False)
+                        
+                        print("✅ Updated executive summary, JSON files, and review_output.json with comparison results")
                 else:
                     print("⚠️ LLM comparison failed or returned no results")
             else:
