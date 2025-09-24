@@ -1,74 +1,117 @@
-name: Code Review - Diff Only
+name: Code Review - Improved
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+  push:
+    branches: [ main, master, develop ]
   workflow_dispatch:
+    inputs:
+      force_run:
+        description: 'Force run for testing'
+        required: false
+        default: 'true'
 
 jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 2  # Reduced from 0 to avoid timeout issues
+          token: ${{ secrets.GITHUB_TOKEN }}
       
-      - uses: actions/setup-python@v4
+      - name: Setup Python
+        uses: actions/setup-python@v4
         with:
           python-version: '3.11'
       
-      - run: pip install snowflake-connector-python tiktoken whatthepatch snowflake-snowpark-python snowflake-ml-python pandas requests
+      - name: Install dependencies
+        run: pip install snowflake-connector-python tiktoken whatthepatch snowflake-snowpark-python snowflake-ml-python pandas requests
       
-      - name: Generate PR Diff
+      - name: Debug environment
         run: |
-          BASE_BRANCH="${{ github.event.pull_request.base.ref || 'main' }}"
-          echo "Generating diff against $BASE_BRANCH"
+          echo "Event name: ${{ github.event_name }}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref }}"
+          echo "PR Number: ${{ github.event.pull_request.number || 'N/A' }}"
+          echo "Commit SHA: ${{ github.sha }}"
+          echo "Base ref: ${{ github.event.pull_request.base.ref || github.ref_name }}"
+          git branch -a
+          ls -la scripts/
+      
+      - name: Generate diff
+        run: |
+          mkdir -p chunks reviews
           
-          # Generate diff
-          git diff origin/$BASE_BRANCH...HEAD > pr_changes.diff
+          # Determine base branch and PR number
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+            echo "PR mode: BASE_BRANCH=$BASE_BRANCH, PR_NUMBER=$PR_NUMBER"
+            
+            # Generate PR diff
+            git diff origin/$BASE_BRANCH...HEAD > pr_changes.diff
+          else
+            # For push events or manual dispatch, compare with previous commit
+            BASE_BRANCH="${{ github.ref_name }}"
+            PR_NUMBER="${{ github.run_number }}"
+            echo "Push/Manual mode: BASE_BRANCH=$BASE_BRANCH, PR_NUMBER=$PR_NUMBER"
+            
+            # Generate diff against previous commit or create sample
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              git diff HEAD~1 HEAD > pr_changes.diff
+            else
+              echo "Creating sample diff for testing..."
+              echo "diff --git a/scripts/test.py b/scripts/test.py" > pr_changes.diff
+              echo "index 1234567..abcdefg 100644" >> pr_changes.diff
+              echo "--- a/scripts/test.py" >> pr_changes.diff
+              echo "+++ b/scripts/test.py" >> pr_changes.diff
+              echo "@@ -1,3 +1,4 @@" >> pr_changes.diff
+              echo " def test():" >> pr_changes.diff
+              echo "     print('testing')" >> pr_changes.diff
+              echo "+    # Added comment" >> pr_changes.diff
+              echo "     return True" >> pr_changes.diff
+            fi
+          fi
           
-          # Check if diff has content
+          # Store values for later steps
+          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+          echo "BASE_BRANCH=$BASE_BRANCH" >> $GITHUB_ENV
+          
+          # Check diff content
           if [ -s pr_changes.diff ]; then
             echo "Generated diff with $(wc -l < pr_changes.diff) lines"
             echo "Files changed:"
-            git diff --name-only origin/$BASE_BRANCH...HEAD
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              git diff --name-only origin/$BASE_BRANCH...HEAD || echo "No files changed"
+            else
+              git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "No previous commit to compare"
+            fi
           else
-            echo "No changes found - this might be a workflow_dispatch test"
-            # For testing purposes, create a sample diff
-            echo "diff --git a/scripts/simple_test.py b/scripts/simple_test.py" > pr_changes.diff
-            echo "index 1234567..abcdefg 100644" >> pr_changes.diff
-            echo "--- a/scripts/simple_test.py" >> pr_changes.diff
-            echo "+++ b/scripts/simple_test.py" >> pr_changes.diff
-            echo "@@ -1,3 +1,4 @@" >> pr_changes.diff
-            echo " def hello():" >> pr_changes.diff
-            echo "     print('hello')" >> pr_changes.diff
-            echo "+    # New comment added" >> pr_changes.diff
-            echo "     return True" >> pr_changes.diff
+            echo "No changes detected, creating minimal test diff"
+            echo "diff --git a/test b/test" > pr_changes.diff
+            echo "+test line" >> pr_changes.diff
           fi
           
-          echo "Diff content preview:"
+          echo "Diff preview (first 20 lines):"
           head -20 pr_changes.diff
       
-      - name: Split Diff into Chunks
+      - name: Process diff (optional - your updated code ignores this anyway)
         run: |
-          mkdir -p chunks reviews
           echo "Processing diff file..."
-          python scripts/split_code_diff.py pr_changes.diff chunks/
-          
-          # Verify chunks were created
-          echo "Chunks directory contents:"
-          ls -la chunks/
-          
-          # Count actual files that will be reviewed
-          CHUNK_COUNT=$(find chunks/ -type f -name "*.py" -o -name "*.sql" -o -name "*diff*" | wc -l)
-          echo "Created $CHUNK_COUNT reviewable chunks"
-          
-          if [ $CHUNK_COUNT -eq 0 ]; then
-            echo "WARNING: No chunks created. Creating fallback content."
-            echo "No significant code changes detected" > chunks/no_changes.txt
+          if [ -f scripts/split_code_diff.py ]; then
+            python scripts/split_code_diff.py pr_changes.diff chunks/ || echo "split_code_diff.py failed, continuing..."
+          else
+            echo "split_code_diff.py not found, skipping diff processing"
           fi
+          
+          echo "Chunks directory:"
+          ls -la chunks/ || echo "No chunks directory"
+          
+          # Your cortex_python_review.py scans scripts/ anyway, so this is mostly for logging
       
-      - name: Review Code Changes
-        run: python scripts/cortex_python_review.py chunks reviews ${{ github.event.number || '123' }} ${{ github.sha }}
+      - name: Run code review
+        run: python scripts/cortex_python_review.py chunks reviews $PR_NUMBER ${{ github.sha }}
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
@@ -78,14 +121,29 @@ jobs:
           SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
           SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
       
-      - uses: actions/upload-artifact@v4
+      - name: Upload review outputs
+        uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: diff-review-outputs
-          path: reviews/
+          name: review-outputs-${{ env.PR_NUMBER }}-${{ github.run_id }}
+          path: |
+            reviews/
+            review_output.json
+            pr_changes.diff
       
-      - name: Post Review Comments
+      - name: Post review comments
+        if: github.event_name == 'pull_request'
         run: python scripts/inline_comment.py
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
+      
+      - name: Debug output
+        if: always()
+        run: |
+          echo "=== Final Status ==="
+          echo "Reviews directory:"
+          ls -la reviews/ || echo "No reviews directory"
+          echo "review_output.json exists:"
+          ls -la review_output.json || echo "No review_output.json"
+          echo "Workflow completed for PR: $PR_NUMBER"
